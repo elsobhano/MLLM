@@ -17,7 +17,7 @@ from transformers import MBartConfig, MBartModel
 
 
 
-class FineTuneModel(pl.LightningModule):
+class PreTrain(pl.LightningModule):
     def __init__(self, 
                 path_1="path_1", 
                 path_2="path_2",
@@ -54,33 +54,29 @@ class FineTuneModel(pl.LightningModule):
         #################Set the Optimizer####################
         self.lr = lr
         #################Set the loss settings###############
-        self.lmbda = None
+        self.lmbda = 1
         self.loss_img = KLLoss()
         self.loss_text = KLLoss()
         
-            
+    def forward(self, batch):
+        images, discs, texts = batch
+        visual_features = self.visual_encoder(images) # V_{j}
+        visual_mapped = self.disc_mapper(visual_features) # D_{j}-Predicted
+        SE_j = self.modality_adapter(torch.cat(visual_mapped, discs, dim=1))
+        M_predicted = self.multimodal_encoder(SE_j)
+        return (M_predicted, texts), (visual_mapped, discs)
     
-
-    def forward(self, samples):
-        pass
     def on_train_epoch_start(self):
         optimizer = self.trainer.optimizers[0]
         lr = optimizer.param_groups[0]['lr']
         self.log('learning_rate', lr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def training_step(self, batch, batch_idx):
-        images, discs, texts = batch # images:(bsz, num_frames, 3, 224, 224), discs:(bsz, num_frames, 768)->D_{j}-Traget, texts:(bsz, num_frames, 512)->T_{j}-Target
-        visual_features = self.visual_encoder(images) # V_{j}
-        visual_mapped = self.disc_mapper(visual_features) # D_{j}-Predicted
-        SE_j = self.modality_adapter(torch.cat(visual_mapped, discs, dim=1))
-        M_predicted = self.multimodal_encoder(SE_j)
-        loss_total = self.mmlp_loss((M_predicted, texts), (visual_mapped, discs))
+        loss_total = self.mmlp_loss(self.forward(batch))
         return loss_total
 
-    
     def validation_step(self, batch, batch_idx):
         pass
-    
     
     def test_step(self, batch, batch_idx):
         pass
@@ -282,11 +278,8 @@ class MBartEncoder(nn.Module):
         
         # Load the pre-trained mBART model
         self.mbart = MBartModel.from_pretrained(pretrained_model_name)
-        
-        # Limit the number of encoder layers
-        if num_layers < len(self.mbart.config.encoder_layers):
-            self.mbart.encoder.layers = self.mbart.encoder.layers[:num_layers]
-            self.mbart.config.encoder_layers = num_layers
+        for param in self.mbart.parameters():
+            param.requires_grad = False  # Freeze the pre-trained weights
 
     def forward(self, input_ids, attention_mask=None):
         """
@@ -318,14 +311,17 @@ class MBartEncoderWithLoRA(nn.Module):
         # Load pre-trained mBART model
         self.mbart = MBartModel.from_pretrained(pretrained_model_name)
         
-        # Limit the number of encoder layers
-        if num_layers < len(self.mbart.encoder.layers):
-            self.mbart.encoder.layers = self.mbart.encoder.layers[:num_layers]
-            self.mbart.config.encoder_layers = num_layers
-        
         # Apply LoRA to the encoder
         if lora_config is not None:
             self.mbart.encoder = get_peft_model(self.mbart.encoder, lora_config)
+        
+        for param in self.mbart.parameters():
+            param.requires_grad = False
+
+        # Only unfreeze LoRA parameters
+        for name, param in self.mbart.named_parameters():
+            if "lora" in name:
+                param.requires_grad = True
 
     def forward(self, input_ids, attention_mask=None):
         """
