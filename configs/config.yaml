@@ -1,0 +1,12 @@
+data:
+    lmdb_path: '/home/sobhan/Documents/Code/LLaMA-Adapter/SQA-Lightning/src/sqa/data/lmdb'
+    max_length: 300
+model:
+    I3D: /home/sobhan/Documents/Code/PSP/tmp/meinedgs_i3d.pth.tar
+    tokenizer: /home/sobhan/Documents/Code/mbart-large-cc25
+    transformer:  /home/sobhan/Documents/Code/mbart-large-cc25
+    resnet: /home/sobhan/Documents/Code/resnet18.pth
+training:
+    wandb: disabled # online or disabled
+    scale_embedding: False
+    ckpt_path: best-epoch=088-val_loss=0.637.ckpt
