@@ -3,10 +3,13 @@ data:
     max_length: 300
 model:
     I3D: /home/sobhan/Documents/Code/PSP/tmp/meinedgs_i3d.pth.tar
-    tokenizer: /home/sobhan/Documents/Code/mbart-large-cc25
-    transformer:  /home/sobhan/Documents/Code/mbart-large-cc25
-    resnet: /home/sobhan/Documents/Code/resnet18.pth
+    tokenizer: pretrain_models/MBart_trimmed
+    transformer:  pretrain_models/MBart_trimmed
+    visual_encoder: pretrain_models/mytran
+    resnet: resnet18.pth
+    embed_dim: 1024
+    sign_proj: True
 training:
     wandb: disabled # online or disabled
     scale_embedding: False
-    ckpt_path: best-epoch=088-val_loss=0.637.ckpt
+    ckpt_path: /home/sobhan/Documents/Code/MLLM/ckpts/best-epoch=020-val_loss=1.081.ckpt

@@ -7,7 +7,7 @@ import gzip
 import pickle
 import lmdb
 import os
-import cv2
+
 
 def data_augmentation(resize=(320, 240), crop_size=224, is_train=True):
     if is_train:
