@@ -6,6 +6,15 @@ __pycache__/
 # C extensions
 *.so
 
+
+ckpts/
+_new/
+finetune_new/
+pretrain_new/
+wandb/
+pretrain_models/
+
+csv_outputs/
 # Distribution / packaging
 output/
 .Python
