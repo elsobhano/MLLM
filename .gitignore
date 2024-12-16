@@ -14,7 +14,7 @@ finetune_new/
 pretrain_new/
 wandb/
 pretrain_models/
-
+MBart_trimmed/
 csv_outputs/
 # Distribution / packaging
 output/
