@@ -36,7 +36,7 @@ class resnet(nn.Module):
         self.resnet = make_resnet(name='resnet18', resnet_path=resnet_path)
 
     def forward(self, x, lengths):
-        x = self.resnet(x)
+        # x = self.resnet(x)
         x_batch = []
         start = 0
         for length in lengths:
@@ -87,7 +87,7 @@ class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False, resent_path=None):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet(resnet_path=resent_path) # InceptionI3d()
-        self.conv_1d = TemporalConv(input_size=512, hidden_size=1024, conv_type=2)
+        self.conv_1d = TemporalConv(input_size=1024, hidden_size=1024, conv_type=2)
 
         if frozen:
             for param in self.conv_2d.parameters():

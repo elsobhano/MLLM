@@ -1,12 +1,12 @@
 data:
-    lmdb_path: /mnt/fast/nobackup/scratch4weeks/sa04359/data/lmdb
+    lmdb_path: /home/sobhan/Documents/Code/MLLM/desc
+    lmdb_path_images: /mnt/fast/nobackup/scratch4weeks/sa04359/data/lmdb
     max_length: 300
-    labels: /mnt/fast/nobackup/users/sa04359/CLIP/MLLM/data/labels
+    labels: /home/sobhan/Documents/Code/MLLM/data/labels
 model:
-    I3D: /home/sobhan/Documents/Code/PSP/tmp/meinedgs_i3d.pth.tar
-    tokenizer: /mnt/fast/nobackup/scratch4weeks/sa04359/MBart_trimmed
-    transformer: /mnt/fast/nobackup/scratch4weeks/sa04359/MBart_trimmed
-    resnet: /mnt/fast/nobackup/scratch4weeks/sa04359/resnet18.pth
+    tokenizer: /home/sobhan/Documents/Code/MLLM/MBart_trimmed
+    transformer: /home/sobhan/Documents/Code/MLLM/MBart_trimmed
+    resnet: /home/sobhan/Documents/Code/MLLM/ckpts/resnet18.pth
     embed_dim: 1024
     sign_proj: True
 training:
@@ -15,5 +15,5 @@ training:
     ckpt_path: /mnt/fast/nobackup/scratch4weeks/sa04359/MMSLT/run_2024-12-13_19-20-52/best-epoch=053-val_loss=0.904.ckpt
     ckpt_path_best: /mnt/fast/nobackup/scratch4weeks/sa04359/MMSLT/run_2024-12-10_17-56-53/best-epoch=076-val_loss=1.120.ckpt
 save:
-    output: /mnt/fast/nobackup/scratch4weeks/sa04359/MMSLT
+    output: outputs/
     csv: csv_outputs/

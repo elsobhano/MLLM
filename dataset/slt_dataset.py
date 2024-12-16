@@ -11,8 +11,10 @@ from torchvision import transforms
 
 import pytorch_lightning as pl
 from transformers import MBartTokenizer
-
-from dataset.utils import load_dataset_file, read_lmdb_folder, data_augmentation
+try:
+    from dataset.utils import load_dataset_file, read_lmdb_folder, data_augmentation
+except:
+    from utils import load_dataset_file, read_lmdb_folder, data_augmentation
 
 import warnings
 
@@ -38,19 +40,6 @@ class S2T_Dataset(Dataset):
         self.max_length = config['data']['max_length']
         self.list = [key for key,value in self.raw_data.items()]   
 
-        sometimes = lambda aug: va.Sometimes(0.5, aug) # Used to apply augmentor with 50% probability
-        self.seq = va.Sequential([
-            # va.RandomCrop(size=(240, 180)), # randomly crop video with a size of (240 x 180)
-            # va.RandomRotate(degrees=10), # randomly rotates the video with a degree randomly choosen from [-10, 10]  
-            sometimes(va.RandomRotate(30)),
-            sometimes(va.RandomResize(0.2)),
-            # va.RandomCrop(size=(256, 256)),
-            sometimes(va.RandomTranslate(x=10, y=10)),
-
-            # sometimes(Brightness(min=0.1, max=1.5)),
-            # sometimes(Contrast(min=0.1, max=2.0)),
-
-        ])
     def __len__(self):
         return len(self.raw_data)
         # return 10
@@ -62,44 +51,17 @@ class S2T_Dataset(Dataset):
         name_sample = sample['name']
         tgt_sample = sample['text']
         
-        img_sample = self.load_imgs(name_sample)
+        img_sample = self.load_data(name_sample)
         # print(img_sample.shape)
+        # print('Hello World!')
         return name_sample, img_sample, tgt_sample
     
-    def load_imgs(self, file_name):
+    def load_data(self, file_name):
         phase, file_name = file_name.split('/')
         folder = os.path.join(self.lmdb_path, phase)
         # print(folder, file_name)
-        images = read_lmdb_folder(folder, file_name)
-        len_imgs = len(images)
-        
-        if len_imgs > self.max_length:
-            images = images[:self.max_length]
-            len_imgs = len(images)
-        
-        imgs = torch.zeros(len_imgs,3, 224,224)
-        crop_rect, resize = data_augmentation(resize=(256, 256), crop_size=224, is_train=(self.phase=='train'))
-        data_transform = transforms.Compose([
-                                    transforms.ToTensor(),
-                                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), 
-                                    ])
-        batch_image = []
-        for i,img in enumerate(images):
-            # print(img.shape)
-            img = np.transpose(img, (1, 2, 0))
-            # img = np.transpose(img, (0, 1, 2))
-            img = Image.fromarray(img)
-            batch_image.append(img)
-        
-        if self.phase == 'train':
-            batch_image = self.seq(batch_image)
-        
-        for i, img in enumerate(batch_image):
-            img = img.resize(resize)
-            img = data_transform(img).unsqueeze(0)
-            imgs[i,:,:,:] = img[:,:,crop_rect[1]:crop_rect[3],crop_rect[0]:crop_rect[2]]
-
-        return imgs
+        data = torch.from_numpy(read_lmdb_folder(folder, file_name + '_desc'))
+        return data
 
     def __str__(self):
         return f'#total {self.phase} set: {len(self.list)}.'
@@ -122,14 +84,14 @@ class S2T_Dataset(Dataset):
         max_len = max_len + left_pad + right_pad
         padded_video = [torch.cat(
             (
-                vid[0][None].expand(left_pad, -1, -1, -1),
+                vid[0][None].expand(left_pad, -1),
                 vid,
-                vid[-1][None].expand(max_len - len(vid) - left_pad, -1, -1, -1),
+                vid[-1][None].expand(max_len - len(vid) - left_pad, -1),
             )
             , dim=0)
             for vid in img_tmp]
         
-        img_tmp = [padded_video[i][0:video_length[i],:,:,:] for i in range(len(padded_video))]
+        img_tmp = [padded_video[i][0:video_length[i],:] for i in range(len(padded_video))]
         
         for i in range(len(img_tmp)):
             src_length_batch.append(len(img_tmp[i]))
@@ -236,7 +198,8 @@ if __name__ == "__main__":
     #     }
     # }
     # print(config)
-    tokenizer_path = "/home/sobhan/Documents/Code/GFSLT-VLP/pretrain_models/MBart_trimmed"
+    tokenizer_path = "/home/sobhan/Documents/Code/MLLM/MBart_trimmed"
+    tokenizer = MBartTokenizer.from_pretrained(tokenizer_path)
     # qa_csv_path = '/home/sobhan/Documents/Code/Sign2GPT/data/clean-qa.csv'
     qa_csv_path = '/home/sobhan/Documents/Code/Sign2GPT/data/clean-qa.csv'
     root_text_path = '/home/sobhan/Documents/Code/LLaMA-Adapter/SQA-Lightning/src/sqa/data/labels'
@@ -244,7 +207,7 @@ if __name__ == "__main__":
     data_module = DataModule(
         root_text_path,
         qa_csv_path,
-        tokenizer_path,
+        tokenizer,
         data_config=config,
         batch_size=2,
         num_workers=1,
@@ -260,13 +223,13 @@ if __name__ == "__main__":
 
     train_dataloader = data_module.train_dataloader()
     # print(dataloader)
-    tokenizer = MBartTokenizer.from_pretrained(tokenizer_path)
     # Example training loop
-    for idx, batch in enumerate(train_dataloader):
-        print(batch['targets'].shape)
-        print(batch['targets'][0])
-        print(tokenizer.decode(batch['targets'][0], skip_special_tokens=True))
-        print(batch['atts_targets'].shape)
-        print(batch['atts_targets'][0])
+    for idx, (src_input, tgt_input) in enumerate(train_dataloader):
+        print(tgt_input['input_ids'].shape)
+        print(tgt_input['attention_mask'].shape)
+        print(tokenizer.batch_decode(tgt_input['input_ids'], skip_special_tokens=True))
+        print(src_input['input_ids'].shape)
+        print(src_input['attention_mask'].shape)
+        print(src_input['src_length_batch'].shape)
         print('Successfully loaded batch {}'.format(idx))
 
