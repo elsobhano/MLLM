@@ -16,6 +16,8 @@ wandb/
 pretrain_models/
 MBart_trimmed/
 csv_outputs/
+*.sub
+*.pth
 # Distribution / packaging
 output/
 .Python
