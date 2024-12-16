@@ -58,6 +58,7 @@ def load_dataset_file(filename):
     with gzip.open(filename, "rb") as f:
         loaded_object = pickle.load(f)
         return loaded_object
+
 def read_lmdb_folder(lmdb_path, folder_name=None):
     """
     Read images from a specific folder key in the LMDB database.

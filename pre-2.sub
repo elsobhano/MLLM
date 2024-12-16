@@ -1,0 +1,20 @@
+#!/bin/sh
+
+#SBATCH --job-name="pre-2"
+#SBATCH --partition=a100
+#SBATCH --exclude=aisurrey25
+#SBATCH --gpus=1
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --mem=100G
+#SBATCH --time=0-36:00:00
+#SBATCH -o slurm_logs/slurm.%N.%j.out 
+#SBATCH -e slurm_logs/slurm.%N.%j.err
+
+launcher=launch.sh
+
+script=pretrain.py
+args="--batch_size 16 --lr 4e-4 --data_ver 1"
+
+arguments="$launcher torchrun --nproc_per_node=1 --master_port=12346 $script $args"
+apptainer exec docker://container-registry.surrey.ac.uk/shared-containers/sobhan-sqa bash $arguments > pretrain-2.out
