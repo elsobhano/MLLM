@@ -3,19 +3,17 @@ from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from PIL import Image
 import os
-import random
 import numpy as np
 import yaml
 import torchvision.transforms as T
+from vidaug import augmentors as va
+from torchvision import transforms
 
 import pytorch_lightning as pl
 from transformers import MBartTokenizer
-try:
-    from dataset.utils import load_dataset_file, read_lmdb_folder
-    from dataset.video_transform import ConsistentVideoTransforms
-except:
-    from utils import load_dataset_file, read_lmdb_folder
-    from video_transform import ConsistentVideoTransforms
+
+from dataset.utils import load_dataset_file, read_lmdb_folder, data_augmentation
+
 import warnings
 
 # Suppress a specific warning by category
@@ -40,9 +38,19 @@ class S2T_Dataset(Dataset):
         self.max_length = config['data']['max_length']
         self.list = [key for key,value in self.raw_data.items()]   
 
-        self.transforms = ConsistentVideoTransforms(mode=phase)
-        self.segment_size = 16
-        self.stride = 8
+        sometimes = lambda aug: va.Sometimes(0.5, aug) # Used to apply augmentor with 50% probability
+        self.seq = va.Sequential([
+            # va.RandomCrop(size=(240, 180)), # randomly crop video with a size of (240 x 180)
+            # va.RandomRotate(degrees=10), # randomly rotates the video with a degree randomly choosen from [-10, 10]  
+            sometimes(va.RandomRotate(30)),
+            sometimes(va.RandomResize(0.2)),
+            # va.RandomCrop(size=(256, 256)),
+            sometimes(va.RandomTranslate(x=10, y=10)),
+
+            # sometimes(Brightness(min=0.1, max=1.5)),
+            # sometimes(Contrast(min=0.1, max=2.0)),
+
+        ])
     def __len__(self):
         return len(self.raw_data)
         # return 10
@@ -63,17 +71,18 @@ class S2T_Dataset(Dataset):
         folder = os.path.join(self.lmdb_path, phase)
         # print(folder, file_name)
         images = read_lmdb_folder(folder, file_name)
-        # print(len(images))
-        images = images[::2]
-        # print(len(images))
-        # exit(0)
-        # print(type(images[0]))
         len_imgs = len(images)
         
         if len_imgs > self.max_length:
             images = images[:self.max_length]
             len_imgs = len(images)
         
+        imgs = torch.zeros(len_imgs,3, 224,224)
+        crop_rect, resize = data_augmentation(resize=(256, 256), crop_size=224, is_train=(self.phase=='train'))
+        data_transform = transforms.Compose([
+                                    transforms.ToTensor(),
+                                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), 
+                                    ])
         batch_image = []
         for i,img in enumerate(images):
             # print(img.shape)
@@ -82,10 +91,15 @@ class S2T_Dataset(Dataset):
             img = Image.fromarray(img)
             batch_image.append(img)
         
-        transformed_frames = self.transforms(batch_image)
-
+        if self.phase == 'train':
+            batch_image = self.seq(batch_image)
         
-        return transformed_frames
+        for i, img in enumerate(batch_image):
+            img = img.resize(resize)
+            img = data_transform(img).unsqueeze(0)
+            imgs[i,:,:,:] = img[:,:,crop_rect[1]:crop_rect[3],crop_rect[0]:crop_rect[2]]
+
+        return imgs
 
     def __str__(self):
         return f'#total {self.phase} set: {len(self.list)}.'
@@ -149,7 +163,7 @@ class DataModule(pl.LightningDataModule):
             self, 
             root_text_path,
             qa_csv_path,
-            tokenizer_path,
+            tokenizer,
             data_config: dict|str,
             resize=256,
             input_size=224,
@@ -162,7 +176,6 @@ class DataModule(pl.LightningDataModule):
         self.text_test = root_text_path + '.test'
 
         self.qa_csv_path = qa_csv_path
-        self.tokenizer_path = tokenizer_path
 
         if type(data_config) == str:
             with open(data_config, 'r') as file:
@@ -180,7 +193,7 @@ class DataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         
         ####################Intialize Tokenizer####################
-        self.tokenizer = MBartTokenizer.from_pretrained(tokenizer_path)
+        self.tokenizer = tokenizer
         # Ensure the tokenizer has the necessary special tokens
         # special_tokens_dict = {'bos_token': '<bos>', 'eos_token': '<eos>', 'pad_token': '<pad>'}
         # self.tokenizer.add_special_tokens(special_tokens_dict)
@@ -194,8 +207,8 @@ class DataModule(pl.LightningDataModule):
             
             self.train_dataset = S2T_Dataset(path=self.text_train, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='train')
 
-            # self.val_dataset = S2T_Dataset(path=self.text_val, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='dev')
-            self.val_dataset = self.train_dataset
+            self.val_dataset = S2T_Dataset(path=self.text_val, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='dev')
+            # self.val_dataset = self.train_dataset
         if stage == 'test' or stage is None:
             # test dataset
             self.test_dataset = S2T_Dataset(path=self.text_test, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='test')

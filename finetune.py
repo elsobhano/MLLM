@@ -1,12 +1,13 @@
 import torch
 import torch.backends.cudnn as cudnn
 from models.Finetune_Model import FineTuneModel
-
+from collections import OrderedDict
 from models.utils import manage_directory
 from dataset.slt_dataset import DataModule
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from transformers import MBartTokenizer
 import yaml
 
 import os
@@ -24,15 +25,15 @@ def get_args_parser():
     parser.add_argument('--eval_freq', default=10, type=int, metavar='N', 
                         help='The frequency of metric evaluation, e.g Bleu score')
     ##################Transformer and Encoder Params####################################    
-    parser.add_argument('--mbart_path', type=str, default="/home/sobhan/Documents/Code/GFSLT-VLP/pretrain_models/MBart_trimmed",
+    parser.add_argument('--mbart_path', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/mbart-large-cc25",
                         help='Path to the MBart model.')
-    parser.add_argument('--tokenizer_path', type=str, default="/home/sobhan/Documents/Code/GFSLT-VLP/pretrain_models/MBart_trimmed",
+    parser.add_argument('--tokenizer_path', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/mbart-large-cc25",
                         help='Path to the MBart tokenizer.')
     parser.add_argument('--encoder_ckpt', type=str, default=None, help='Path to the encoder checkpoint.')
     parser.add_argument('--model_ckpt', type=str, default=None, help='Path to the model checkpoint.')
     parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate.')
     ##################Data Params##########################################################
-    parser.add_argument('--text_path', type=str, default="/home/sobhan/Documents/Code/LLaMA-Adapter/SQA-Lightning/src/sqa/data/labels", 
+    parser.add_argument('--text_path', type=str, default="/mnt/fast/nobackup/users/sa04359/CLIP/MLLM/data/labels", 
                         help='Path to the text data.')
     parser.add_argument('--qa_csv_path', type=str, default=None,
                         help='Path to the csv file.')
@@ -42,10 +43,10 @@ def get_args_parser():
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
     
-    parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
+    parser.add_argument('--logger', type=str, default='wandb', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
-    parser.add_argument('--output_dir', type=str, default="output", help='Output directory.')
-    parser.add_argument('--log_dir', type=str, default="output", help='Output directory.')
+    parser.add_argument('--output_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
+    parser.add_argument('--log_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
     parser.add_argument('--save_csv', type=str, default="csv_outputs/", help='Output directory.')
     return parser
 
@@ -62,12 +63,23 @@ def main(args):
     # fix the seed for reproducibility
     cudnn.benchmark = True
 
+    with open(args.data_config, 'r') as file:
+            config = yaml.safe_load(file)
+
+    args.text_path = config['data']['labels']
+    args.tokenizer_path = config['model']['tokenizer']
+    args.output_dir = config['save']['output']
+    args.log_dir = config['save']['output']
+    args.save_csv = config['save']['csv']
+    args.save_csv = args.save_csv.split("/")[0] + str(args.data_ver) + "/"
+    args.model_ckpt = config['training']['ckpt_path']
+
     # set logger
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if args.logger == 'wandb':
         save_dir=f'{args.log_dir}/log_{current_time}'
         setupWandB(storage=save_dir)
-        logger = WandbLogger(project="Shit-Test", config=vars(args))
+        logger = WandbLogger(project="multi-test", config=vars(args))
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     dirpath = f'{args.output_dir}/run_{current_time}'
@@ -87,57 +99,23 @@ def main(args):
     callbacks = [checkpoint_callback]
     manage_directory(args.save_csv)
     model = FineTuneModel(
-                config=args.data_config,
-                lr=args.lr, 
-                encoder_ckpt=args.encoder_ckpt,
-                eval_freq=args.eval_freq,
-                csv_dire=args.save_csv)
-    with open(args.data_config, 'r') as file:
-            config = yaml.safe_load(file) 
-    # model.transfer_specific_features('best-epoch=088-val_loss=0.071-train_loss=0.010.ckpt',['sign_encoder','proj_visual'])
-    checkpoint = torch.load(config['training']['ckpt_path'], map_location='cpu')
+                args.data_config,
+                args,
+                args.eval_freq,
+                args.save_csv)
 
-    new_state_dict = {}
-    # Inspect parameter names in the checkpoint
-    # print("Checkpoint parameters:")
-    for name, key in checkpoint['state_dict'].items():
-        if 'pretrain_model.model_images.model' in name:
-            name = name.replace('pretrain_model.model_images.model', 'sign_encoder')
-            new_state_dict[name] = key
-        if 'pretrain_model.model_images.trans_encoder' in name:
-            name = name.replace('pretrain_model.model_images.trans_encoder', 'mbart')
-            if '.model.' in name:
-                name = name.replace('.model.', '.model.model.encoder.')
-            new_state_dict[name] = key
-        # print(name, key.shape)
-        # if 'final_logits_bias' in name or 'shared' in name or 'lm_head' in name:
-            # print(name)
-
-    # *replace the word embedding
-    model_dict = torch.load(config['model']['transformer']+'/pytorch_model.bin', map_location='cpu')
-    for k, v in model_dict.items():
-        if 'decoder.embed_tokens.weight' in k:
-            k = 'mbart.base_model.model.' + k
-            new_state_dict[k] = v
-        if 'decoder.embed_positions.weight' in k:
-            k = 'mbart.base_model.model.' + k
-            new_state_dict[k] = v
-    
-    # ret = model.load_state_dict(new_state_dict, strict=False)
-    # print('Missing keys: \n', '\n'.join(ret.missing_keys))
-    # print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
-
+    tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
     data_module = DataModule(
                 root_text_path=args.text_path, 
                 data_config=args.data_config,
                 qa_csv_path=args.qa_csv_path,
-                tokenizer_path=args.tokenizer_path,
+                tokenizer=tokenizer,
                 batch_size=args.batch_size, 
                 num_workers=args.num_workers,
                 data_ver=args.data_ver)
-    
+
     trainer = pl.Trainer(
-        strategy="ddp_find_unused_parameters_true",
+        strategy="ddp",
         sync_batchnorm=True,
         logger=logger,
         num_sanity_val_steps=0,
@@ -148,17 +126,12 @@ def main(args):
         precision=16,
         callbacks=callbacks,
     )
-    if args.model_ckpt is None:
-        trainer.fit(model, data_module)
-        best_model_path = checkpoint_callback.best_model_path
-        print(f"Best model path: {best_model_path}")
-        best_model = FineTuneModel.load_from_checkpoint(best_model_path)
-        trainer.validate(best_model, data_module)
-        trainer.test(best_model, data_module)
-    else:
-        best_model = FineTuneModel.load_from_checkpoint(args.model_ckpt)
-        trainer.test(best_model, data_module)
-
+    trainer.fit(model, data_module)
+    best_model_path = checkpoint_callback.best_model_path
+    print(f"Best model path: {best_model_path}")
+    best_model = FineTuneModel.load_from_checkpoint(best_model_path)
+    trainer.validate(best_model, data_module)
+    trainer.test(best_model, data_module)
 
 if __name__ == '__main__':
     args = get_args_parser()

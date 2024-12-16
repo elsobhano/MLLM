@@ -1,12 +1,19 @@
 data:
-    lmdb_path: '/home/sobhan/Documents/Code/LLaMA-Adapter/SQA-Lightning/src/sqa/data/lmdb'
+    lmdb_path: /mnt/fast/nobackup/scratch4weeks/sa04359/data/lmdb
     max_length: 300
+    labels: /mnt/fast/nobackup/users/sa04359/CLIP/MLLM/data/labels
 model:
     I3D: /home/sobhan/Documents/Code/PSP/tmp/meinedgs_i3d.pth.tar
-    tokenizer: /home/sobhan/Documents/Code/mbart-large-cc25
-    transformer:  /home/sobhan/Documents/Code/mbart-large-cc25
-    resnet: /home/sobhan/Documents/Code/resnet18.pth
+    tokenizer: /mnt/fast/nobackup/scratch4weeks/sa04359/MBart_trimmed
+    transformer: /mnt/fast/nobackup/scratch4weeks/sa04359/MBart_trimmed
+    resnet: /mnt/fast/nobackup/scratch4weeks/sa04359/resnet18.pth
+    embed_dim: 1024
+    sign_proj: True
 training:
     wandb: disabled # online or disabled
     scale_embedding: False
-    ckpt_path: best-epoch=088-val_loss=0.637.ckpt
+    ckpt_path: /mnt/fast/nobackup/scratch4weeks/sa04359/MMSLT/run_2024-12-13_19-20-52/best-epoch=053-val_loss=0.904.ckpt
+    ckpt_path_best: /mnt/fast/nobackup/scratch4weeks/sa04359/MMSLT/run_2024-12-10_17-56-53/best-epoch=076-val_loss=1.120.ckpt
+save:
+    output: /mnt/fast/nobackup/scratch4weeks/sa04359/MMSLT
+    csv: csv_outputs/

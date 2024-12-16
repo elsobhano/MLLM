@@ -5,7 +5,11 @@ __pycache__/
 
 # C extensions
 *.so
-
+*.sub
+ckpts/
+csv_outputs/
+csv_outputs0/
+MBart_trimmed/
 # Distribution / packaging
 output/
 .Python
