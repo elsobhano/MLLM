@@ -1,72 +1,7 @@
 import torch
 from collections import OrderedDict
-import numpy as np
+
 import os
-import random
-
-WORD_MASK = "<mask>"
-
-def sampler_func(clip, sn, random_choice=True):
-    if random_choice:
-        f = lambda n: [(lambda n, arr: n if arr == [] else np.random.choice(arr))(n * i / sn,
-                                                                                range(int(n * i / sn),
-                                                                                        max(int(n * i / sn) + 1,
-                                                                                            int(n * (
-                                                                                                    i + 1) / sn))))
-                        for i in range(sn)]
-    else:
-        f = lambda n: [(lambda n, arr: n if arr == [] else int(np.mean(arr)))(n * i / sn, range(int(n * i / sn),
-                                                                                                max(int(
-                                                                                                    n * i / sn) + 1,
-                                                                                                    int(n * (
-                                                                                                            i + 1) / sn))))
-                        for i in range(sn)]
-    return f(clip)
-
-
-def NoiseInjecting(raw_gloss, noise_rate=0.15, noise_type='omit_last', random_shuffle=False, is_train=True):
-    new_gloss = []
-    noise_idxes = []
-    for ii, gloss in enumerate(raw_gloss):
-        noise_num = -1 
-        text = gloss.split()
-
-        if noise_type == 'omit':
-            # del noise
-            if random.uniform(0, 1) <= 1. and is_train:
-                index = sampler_func(len(text), int(len(text)*(1. - noise_rate)), random_choice=is_train)
-                noise_gloss = []
-                noise_idx = []
-                for i, d in enumerate(text):
-                    if i in index:
-                        noise_gloss.append(d)
-                    else:
-                        noise_gloss.append(WORD_MASK)
-                        noise_idx.append(i)
-            else:
-                noise_gloss = [d for d in text]
-
-        elif noise_type == 'omit_last' :
-            noise_idx = []
-            if random.uniform(0, 1) <= 1.0 and is_train:
-                index = np.arange(0, len(text) - int(np.ceil(len(text)*(np.random.uniform(0,noise_rate,(1,))))), 1, dtype=int)
-                noise_gloss = []
-                for i, d in enumerate(text):
-                    if i in index:
-                        noise_gloss.append(d)
-                    else:
-                        noise_gloss.append(WORD_MASK)
-                        noise_idx.append(noise_num - 2)
-                        noise_num -= 1
-            else:
-                noise_gloss = [d for d in text]
-        
-        if is_train and random_shuffle and random.uniform(0, 1) > 0.5:
-            random.shuffle(noise_gloss) # random shuffle sequence
-
-        new_gloss.append(' '.join(noise_gloss))
-        noise_idxes.append(noise_idx)
-    return new_gloss, noise_idxes
 
 def manage_directory(path):
     # Check if the directory exists

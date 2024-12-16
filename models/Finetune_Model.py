@@ -11,11 +11,8 @@ import wandb
 from collections import OrderedDict
 from models.utils import extract_layers_by_prefix
 from models.clip_models import gloss_free_model
-from peft import get_peft_model, LoraConfig, TaskType
 from pathlib import Path
 import yaml
-from timm.optim import create_optimizer
-from timm.scheduler import create_scheduler
 
 import math
 
@@ -35,11 +32,10 @@ class FineTuneModel(pl.LightningModule):
         with open(config, 'r') as file:
             self.config = yaml.safe_load(file)
         self.args = args
-
-        ################Set the SLT Model####################
+        ################Set the Sign Encoder####################
         self.model = gloss_free_model(self.config, self.args)
         print('***********************************')
-        print('Load parameters for Visual Encoder...')
+        print('Load parameters from Pretrained...')
         print('***********************************')
         state_dict = torch.load(args.model_ckpt, map_location='cpu')['state_dict']
         new_state_dict = OrderedDict()
@@ -48,19 +44,7 @@ class FineTuneModel(pl.LightningModule):
                 k = 'backbone.'+'.'.join(k.split('.')[3:])
                 new_state_dict[k] = v
             if 'trans_encoder' in k:
-                k = 'mbart.model.encoder.'+'.'.join(k.split('.')[3:])
-                new_state_dict[k] = v
-            if 'text_decoder' in k:
-                    k = 'mbart.model.decoder.'+'.'.join(k.split('.')[2:])
-                    new_state_dict[k] = v
-        # *replace the word embedding
-        model_dict = torch.load(self.config['model']['transformer']+'/pytorch_model.bin', map_location='cpu')
-        for k, v in model_dict.items():
-            if 'decoder.embed_tokens.weight' in k:
-                k = 'mbart.' + k
-                new_state_dict[k] = v
-            if 'decoder.embed_positions.weight' in k:
-                k = 'mbart.' + k
+                k = 'mbart.base_model.model.model.encoder.'+'.'.join(k.split('.')[5:])
                 new_state_dict[k] = v
 
         ret = self.model.load_state_dict(new_state_dict, strict=False)
@@ -68,9 +52,14 @@ class FineTuneModel(pl.LightningModule):
         print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
         #################Initialize the tokenizer####################
         self.tokenizer = MBartTokenizer.from_pretrained(self.config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
+        lang_code_to_id = self.tokenizer.lang_code_to_id['de_DE']
         self.end_sym = ' .'
         self.max_txt_len = 64
-        
+        #################Set the Projection####################
+        # self.proj_visual = nn.Linear(1024, 1024)
+        # self.proj_visual.load_state_dict(proj_state_dict, strict=True)
+        #################Set the Optimizer####################
+        self.lr = self.args.lr
         
         self.criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX, label_smoothing=0.2)
 
@@ -87,9 +76,6 @@ class FineTuneModel(pl.LightningModule):
         self.test_decoded = []
         self.test_step_outputs = []
         ######################Prompts#######################
-        self.optimizer = create_optimizer(self.args, self.model)
-        self.scheduler = create_scheduler(self.args, self.optimizer)[0]
-        
     def on_train_epoch_start(self):
         optimizer = self.trainer.optimizers[0]
         lr = optimizer.param_groups[0]['lr']
@@ -101,10 +87,6 @@ class FineTuneModel(pl.LightningModule):
         loss = self.calc_loss(outputs, tgt_input['input_ids'])
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
-    
-    def on_train_epoch_end(self):
-        # Step the scheduler manually at the end of each epoch
-        self.scheduler.step(self.current_epoch)
 
     def validation_step(self, batch, batch_idx):
         src_input, tgt_input = batch
@@ -178,7 +160,7 @@ class FineTuneModel(pl.LightningModule):
     
     def test_step(self, batch, batch_idx):
         src_input, tgt_input = batch
-        outputs = self(src_input, tgt_input)
+        outputs = self.model(src_input, tgt_input)
         loss = self.calc_loss(outputs, tgt_input['input_ids'])
 
         self.log("test_loss", loss, sync_dist=True)
@@ -218,9 +200,9 @@ class FineTuneModel(pl.LightningModule):
     def generate(self, src_input):
         max_new_tokens, num_beams, decoder_start_token_id  = 150, 4, self.tokenizer.lang_code_to_id['de_DE']
         out = self.model.generate(
-                            src_input, 
+                            src_input,
                             max_new_tokens, 
-                            num_beams, 
+                            num_beams,
                             decoder_start_token_id
                             )
 
@@ -251,21 +233,37 @@ class FineTuneModel(pl.LightningModule):
         ]
 
     def configure_optimizers(self):
-        return self.optimizer
 
-    # def configure_gradient_clipping(self, optimizer, gradient_clip_val, gradient_clip_algorithm):
-    #     # Implement your own custom logic to clip gradients
-    #     # You can call `self.clip_gradients` with your settings:
-    #     self.clip_gradients(
-    #     optimizer,
-    #     gradient_clip_val=1.0,
-    #     gradient_clip_algorithm="value",
-    #     )
-    #     self.clip_gradients(
-    #         optimizer,
-    #         gradient_clip_val=1.0,
-    #         gradient_clip_algorithm="norm",
-    #     )
+        print(f'lr: {self.lr}')
+        optimizer = torch.optim.AdamW(self.add_weight_decay(weight_decay=0.01), lr=self.lr)
+        
+        scheduler = {
+            "scheduler": torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=self.lr,
+                total_steps=self.trainer.estimated_stepping_batches,
+                pct_start=0.05,  # 5% of total steps for warmup
+                anneal_strategy='cos'
+            ),
+            "interval": "step",
+            "frequency": 1,
+        }
+        
+        return [optimizer], [scheduler]
+
+    def configure_gradient_clipping(self, optimizer, gradient_clip_val, gradient_clip_algorithm):
+        # Implement your own custom logic to clip gradients
+        # You can call `self.clip_gradients` with your settings:
+        self.clip_gradients(
+        optimizer,
+        gradient_clip_val=1.0,
+        gradient_clip_algorithm="value",
+        )
+        self.clip_gradients(
+            optimizer,
+            gradient_clip_val=1.0,
+            gradient_clip_algorithm="norm",
+        )
 
     def add_data_to_csv(self,file_path, new_data, columns):
         """

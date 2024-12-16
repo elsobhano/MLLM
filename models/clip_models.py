@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import MBartForConditionalGeneration
-from transformers.models.mbart.modeling_mbart import shift_tokens_right
+from models.i3d import InceptionI3d
 from peft import get_peft_model, LoraConfig, TaskType
 import numpy as np
 from torch import Tensor
@@ -102,31 +102,6 @@ class FeatureExtracter(nn.Module):
 
         return src
 
-class Text_Decoder(nn.Module):
-    def __init__(self, config):
-        super(Text_Decoder, self).__init__()
-        self.text_decoder = MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder']).get_decoder()
-        self.lm_head = MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder']).get_output_embeddings()
-        self.register_buffer("final_logits_bias", torch.zeros((1, MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder']).model.shared.num_embeddings)))
-
-
-    
-    def forward(self, tgt_input, masked_tgt_input, encoder_hidden_states):
-        
-        encoder_hidden_states = encoder_hidden_states.detach()
-
-        decoder_input_ids = shift_tokens_right(tgt_input['input_ids'], self.text_decoder.config.pad_token_id)
-        decoder_out = self.text_decoder(
-                    input_ids = decoder_input_ids,
-                    attention_mask = tgt_input['attention_mask'],
-                    encoder_hidden_states = encoder_hidden_states,
-                    encoder_attention_mask = masked_tgt_input['attention_mask'],
-                    return_dict = True,
-                    )
-        lm_logits = self.lm_head(decoder_out[0]) + self.final_logits_bias
-
-        return lm_logits
-
 class TextCLIP(nn.Module):
     def __init__(self, config=None, inplanes=1024, planes=1024, head_type='identy'):
         super(TextCLIP, self).__init__()
@@ -146,7 +121,23 @@ class ImageCLIP(nn.Module):
         self.config = config
         self.model =  FeatureExtracter(resent_path=config['model']['resnet'])
 
-        self.trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder']).get_encoder()
+        trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
+        lora_config = LoraConfig(
+            inference_mode=False,          # Enable training
+            r=16,                          # Rank of the update matrices
+            lora_alpha=32,                 # LoRA scaling factor
+            lora_dropout=0.1,               # Dropout probability
+            target_modules=["q_proj", "v_proj"]
+        )
+
+        self.trans_encoder = get_peft_model(trans_encoder, lora_config)
+        for param in self.trans_encoder.parameters():
+            param.requires_grad = False
+        # Only unfreeze LoRA parameters
+        for name, param in self.trans_encoder.named_parameters():
+            if "lora" in name:
+                param.requires_grad = True
+        param_after_lora = sum(p.numel() for p in self.trans_encoder.parameters() if p.requires_grad)
     
         self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
 
@@ -170,8 +161,12 @@ class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
         super(SLRCLIP, self).__init__()
         self.model_txt = TextCLIP(config, inplanes=embed_dim, planes=embed_dim)
+        for param in self.model_txt.parameters():
+            param.requires_grad = False 
+        trainable_params_model_texts = sum(p.numel() for p in self.model_txt.parameters() if p.requires_grad)
 
         self.model_images = ImageCLIP(config, inplanes=embed_dim, planes=embed_dim)
+        trainable_params_model_images = sum(p.numel() for p in self.model_images.parameters() if p.requires_grad)
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     def get_model_txt(self):
@@ -219,14 +214,23 @@ class SLRCLIP(nn.Module):
             scale_off_diag=0.5
         )
 
-        return logits_per_image, logits_per_text, ground_truth, self.encoder_hidden_states
-    
+        return logits_per_image, logits_per_text, ground_truth
+
+def config_decoder(config):
+    from transformers import AutoConfig
+    decoder_type = 'LLMD'
+    if decoder_type == 'LD':
+        return MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder'], ignore_mismatched_sizes = True, 
+                                                            config = AutoConfig.from_pretrained(config['model']['visual_encoder']+'/config.json'))
+    elif decoder_type == 'LLMD':
+        return MBartForConditionalGeneration.from_pretrained(config['model']['transformer'], ignore_mismatched_sizes = True, 
+                                                            config = AutoConfig.from_pretrained(config['model']['transformer']+'/config.json'))
 class V_encoder(nn.Module):
     def __init__(self,
-                 emb_size,
-                 feature_size,
-                 config,
-                 ):
+                emb_size,
+                feature_size,
+                config,
+                ):
         super(V_encoder, self).__init__()
         
         self.config = config
@@ -245,25 +249,13 @@ class V_encoder(nn.Module):
                 nn.init.constant_(m.bias, 0)
     
     def forward(self,
-                src: Tensor,
+                src,
                 ):
-      
         src = self.src_emb(src)
         src = self.bn_ac(src.permute(0,2,1)).permute(0,2,1)
 
         return src
 
-def config_decoder(config):
-    from transformers import AutoConfig
-    
-    decoder_type = 'LD'
-    if decoder_type == 'LD':
-        return  MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder'], ignore_mismatched_sizes = True, 
-                                                            config = AutoConfig.from_pretrained(config['model']['visual_encoder'] + '/config.json'))
-    elif decoder_type == 'LLMD':
-        return  MBartForConditionalGeneration.from_pretrained(config['model']['transformer'], ignore_mismatched_sizes = True, 
-                                                            config = AutoConfig.from_pretrained(config['model']['transformer'] + '/LLMD_config.json'))
-    
 class gloss_free_model(nn.Module):
     def __init__(self, config, args, embed_dim=1024, pretrain=None):
         super(gloss_free_model, self).__init__()
@@ -274,13 +266,28 @@ class gloss_free_model(nn.Module):
         # self.mbart = MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder'])
         self.mbart = config_decoder(config)
 
+        lora_config = LoraConfig(
+            inference_mode=False,          # Enable training
+            r=16,                          # Rank of the update matrices
+            lora_alpha=32,                 # LoRA scaling factor
+            lora_dropout=0.1,               # Dropout probability
+            target_modules=["q_proj", "v_proj"]
+        )
+        self.mbart = get_peft_model(self.mbart, lora_config)
+        for param in self.mbart.parameters():
+            param.requires_grad = False
+        # Only unfreeze LoRA parameters
+        for name, param in self.mbart.named_parameters():
+            if "lora" in name:
+                param.requires_grad = True
+
         if config['model']['sign_proj']:
             self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=embed_dim, config = config)
             self.embed_scale = math.sqrt(embed_dim) if config['training']['scale_embedding'] else 1.0
         else:
             self.sign_emb = nn.Identity()
             self.embed_scale = 1.0
-        
+
     def share_forward(self, src_input):
         
         frames_feature = self.backbone(src_input['input_ids'], src_input['src_length_batch'])
@@ -303,8 +310,6 @@ class gloss_free_model(nn.Module):
                     return_dict = True,
                     )
         return out['logits']
-    
-
     def generate(self, src_input, max_new_tokens, num_beams, decoder_start_token_id ):
         inputs_embeds, attention_mask = self.share_forward(src_input)
 

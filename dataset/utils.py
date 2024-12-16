@@ -7,7 +7,7 @@ import gzip
 import pickle
 import lmdb
 import os
-
+import cv2
 
 def data_augmentation(resize=(320, 240), crop_size=224, is_train=True):
     if is_train:
@@ -58,7 +58,6 @@ def load_dataset_file(filename):
     with gzip.open(filename, "rb") as f:
         loaded_object = pickle.load(f)
         return loaded_object
-
 def read_lmdb_folder(lmdb_path, folder_name=None):
     """
     Read images from a specific folder key in the LMDB database.

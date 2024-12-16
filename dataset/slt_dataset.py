@@ -6,11 +6,14 @@ import os
 import numpy as np
 import yaml
 import torchvision.transforms as T
-from models.utils import NoiseInjecting
+from vidaug import augmentors as va
+from torchvision import transforms
+
 import pytorch_lightning as pl
 from transformers import MBartTokenizer
-from dataset.utils import load_dataset_file, read_lmdb_folder
-from dataset.video_transform import ConsistentVideoTransforms
+
+from dataset.utils import load_dataset_file, read_lmdb_folder, data_augmentation
+
 import warnings
 
 # Suppress a specific warning by category
@@ -19,7 +22,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 SI_IDX,PAD_IDX, UNK_IDX,BOS_IDX, EOS_IDX = 0 ,1 ,2 ,3 ,4
 class S2T_Dataset(Dataset):
 
-    def __init__(self, path, tokenizer, config, phase, max_words=128, resize=256, input_size=224, training_refurbish=False):
+    def __init__(self, path, tokenizer, config, phase, max_words=128, resize=256, input_size=224):
         self.config = config
         self.max_words = max_words
 
@@ -35,13 +38,22 @@ class S2T_Dataset(Dataset):
         self.max_length = config['data']['max_length']
         self.list = [key for key,value in self.raw_data.items()]   
 
-        self.transforms = ConsistentVideoTransforms(mode=phase)
-        self.segment_size = 16
-        self.stride = 8
-        self.training_refurbish = training_refurbish
+        sometimes = lambda aug: va.Sometimes(0.5, aug) # Used to apply augmentor with 50% probability
+        self.seq = va.Sequential([
+            # va.RandomCrop(size=(240, 180)), # randomly crop video with a size of (240 x 180)
+            # va.RandomRotate(degrees=10), # randomly rotates the video with a degree randomly choosen from [-10, 10]  
+            sometimes(va.RandomRotate(30)),
+            sometimes(va.RandomResize(0.2)),
+            # va.RandomCrop(size=(256, 256)),
+            sometimes(va.RandomTranslate(x=10, y=10)),
+
+            # sometimes(Brightness(min=0.1, max=1.5)),
+            # sometimes(Contrast(min=0.1, max=2.0)),
+
+        ])
     def __len__(self):
-        # return len(self.raw_data)
-        return 10
+        return len(self.raw_data)
+        # return 10
     
     def __getitem__(self, index):
         # print(index)
@@ -59,11 +71,6 @@ class S2T_Dataset(Dataset):
         folder = os.path.join(self.lmdb_path, phase)
         # print(folder, file_name)
         images = read_lmdb_folder(folder, file_name)
-        # print(len(images))
-        # images = images[::2]
-        # print(len(images))
-        # exit(0)
-        # print(type(images[0]))
         len_imgs = len(images)
         
         if len_imgs > self.max_length:
@@ -84,9 +91,15 @@ class S2T_Dataset(Dataset):
             img = Image.fromarray(img)
             batch_image.append(img)
         
-        transformed_frames = self.transforms(batch_image)
+        if self.phase == 'train':
+            batch_image = self.seq(batch_image)
+        
+        for i, img in enumerate(batch_image):
+            img = img.resize(resize)
+            img = data_transform(img).unsqueeze(0)
+            imgs[i,:,:,:] = img[:,:,crop_rect[1]:crop_rect[3],crop_rect[0]:crop_rect[2]]
 
-        return transformed_frames
+        return imgs
 
     def __str__(self):
         return f'#total {self.phase} set: {len(self.list)}.'
@@ -142,11 +155,7 @@ class S2T_Dataset(Dataset):
 
         src_input['src_length_batch'] = src_length_batch
         src_input['new_src_length_batch'] = new_src_lengths
-        if self.training_refurbish:
-            masked_tgt, mask_indices = NoiseInjecting(tgt_batch, 0.15, noise_type='omit_last', random_shuffle=False, is_train=(self.phase=='train'))
-            with self.tokenizer.as_target_tokenizer():
-                masked_tgt_input = self.tokenizer(masked_tgt, return_tensors="pt", padding = True,  truncation=True)
-            return src_input, tgt_input, masked_tgt_input
+        
         return src_input, tgt_input
     
 class DataModule(pl.LightningDataModule):
@@ -154,15 +163,13 @@ class DataModule(pl.LightningDataModule):
             self, 
             root_text_path,
             qa_csv_path,
-            tokenizer_path,
-            data_config,
+            tokenizer,
+            data_config: dict|str,
             resize=256,
             input_size=224,
             batch_size=1, 
             num_workers=1,
-            data_ver=0,
-            training_Refurbish=False
-            ):
+            data_ver=0):
         super().__init__()
         self.text_train = root_text_path + '.train'
         self.text_val = root_text_path + '.dev'
@@ -186,9 +193,7 @@ class DataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         
         ####################Intialize Tokenizer####################
-        self.tokenizer = MBartTokenizer.from_pretrained(tokenizer_path, src_lang="de_DE", tgt_lang="de_DE")
-        # print(self.tokenizer.decoder_start_token_id)
-        self.training_refurbish = training_Refurbish
+        self.tokenizer = tokenizer
         # Ensure the tokenizer has the necessary special tokens
         # special_tokens_dict = {'bos_token': '<bos>', 'eos_token': '<eos>', 'pad_token': '<pad>'}
         # self.tokenizer.add_special_tokens(special_tokens_dict)
@@ -200,13 +205,13 @@ class DataModule(pl.LightningDataModule):
         if stage == 'fit' or stage is None:
             # tran and valdiation dataset
             
-            self.train_dataset = S2T_Dataset(path=self.text_train, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='train', training_refurbish=self.training_refurbish)
+            self.train_dataset = S2T_Dataset(path=self.text_train, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='train')
 
-            # self.val_dataset = S2T_Dataset(path=self.text_val, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='dev', training_refurbish=self.training_refurbish)
-            self.val_dataset = self.train_dataset
+            self.val_dataset = S2T_Dataset(path=self.text_val, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='dev')
+            # self.val_dataset = self.train_dataset
         if stage == 'test' or stage is None:
             # test dataset
-            self.test_dataset = S2T_Dataset(path=self.text_test, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='test', training_refurbish=self.training_refurbish)
+            self.test_dataset = S2T_Dataset(path=self.text_test, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='test')
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, collate_fn=self.train_dataset.collate_fn)
