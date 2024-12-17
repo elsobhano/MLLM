@@ -11,29 +11,9 @@ import torchvision
 import math
 PAD_IDX = 1
 
-def make_resnet(name='resnet18', resnet_path=None):
-    if name == 'resnet18':
-        model = torchvision.models.resnet18(pretrained=False)
-    elif name == 'resnet34':
-        model = torchvision.models.resnet34(pretrained=True)
-    elif name == 'resnet50':
-        model = torchvision.models.resnet50(pretrained=True)
-    elif name == 'resnet101':
-        model = torchvision.models.resnet101(pretrained=True)
-
-
-    state_dict = torch.load(resnet_path, map_location='cpu', weights_only=True)
-
-    # Load the weights into the model
-    model.load_state_dict(state_dict)
-    inchannel = model.fc.in_features
-    model.fc = nn.Identity()
-    return model
-
 class resnet(nn.Module):
     def __init__(self, resnet_path):
         super(resnet, self).__init__()
-        self.resnet = make_resnet(name='resnet18', resnet_path=resnet_path)
 
     def forward(self, x, lengths):
         # x = self.resnet(x)
