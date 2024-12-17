@@ -10,6 +10,7 @@ __pycache__/
 
 ckpts/
 _new/
+desc/
 finetune_new/
 pretrain_new/
 wandb/
@@ -20,6 +21,7 @@ csv_outputs/
 *.pth
 # Distribution / packaging
 output/
+outputs/
 .Python
 build/
 develop-eggs/
