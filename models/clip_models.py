@@ -97,8 +97,9 @@ class FeatureExtracter(nn.Module):
                 src: Tensor,
                 src_length_batch
                 ):
-        src = self.conv_2d(src,src_length_batch)
-        src = self.conv_1d(src)
+        # src shape: (all_frames_in_batch, 3, 224, 224)
+        src = self.conv_2d(src,src_length_batch) #(batch_size, seq_len, dim=512)
+        src = self.conv_1d(src) #(batch_size, new_seq_len, new_dim=1024)
 
         return src
 
