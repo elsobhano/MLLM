@@ -3,11 +3,11 @@ import torch.backends.cudnn as cudnn
 from models.Finetune_Model import FineTuneModel
 from collections import OrderedDict
 
-from models.utils import manage_directory
+from models.utils import manage_directory, SaveBestModelOnNEpochs
 from dataset.slt_dataset import DataModule
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, Callback
 from transformers import MBartTokenizer
 import yaml
 
@@ -21,7 +21,7 @@ torch.set_float32_matmul_precision("medium")
 def get_args_parser():
     parser = argparse.ArgumentParser('Sign2GPT', add_help=False)
     
-    parser.add_argument('--epochs', default=100, type=int, metavar='N', help='number of total epochs to run')
+    parser.add_argument('--epochs', default=10, type=int, metavar='N', help='number of total epochs to run')
     parser.add_argument('--num_gpus', default=1, type=int, metavar='N', help='number of gpus per node')
     parser.add_argument('--eval_freq', default=5, type=int, metavar='N', 
                         help='The frequency of metric evaluation, e.g Bleu score')
@@ -41,7 +41,7 @@ def get_args_parser():
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
     
-    parser.add_argument('--logger', type=str, default='wandb', help='Logger type.')
+    parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
     parser.add_argument('--output_dir', type=str, default="finetune_new", help='Output directory.')
     parser.add_argument('--log_dir', type=str, default="finetune_new", help='Output directory.')
@@ -96,6 +96,7 @@ def setupWandB(storage=None):
         os.environ['WANDB_CACHE_DIR'] = storage+'/wandb/cache'
         os.environ['WANDB_CONFIG_DIR'] = storage+'/wandb/config'
 
+
 def main(args):
     pl.seed_everything(args.seed)
     # fix the seed for reproducibility
@@ -120,19 +121,23 @@ def main(args):
         logger = WandbLogger(project="multi-test", config=vars(args))
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
-    dirpath = f'{args.output_dir}/run_{current_time}'
+    dirpath = f'{args.output_dir}/run_{current_time}_{args.data_ver}'
     print("Current Time = {}".format(current_time)) 
     
     # set callbacks
-    checkpoint_callback = ModelCheckpoint(
-    save_top_k=1,
-    save_last=True,
-    monitor="val_bleu",
-    every_n_epochs=args.eval_freq + 1,
-    mode="max",
-    dirpath=dirpath,
-    filename="best-{epoch:03d}-{val_loss:.3f}-{val_bleu:.3f}",
-    )
+    # checkpoint_callback = ModelCheckpoint(
+    # save_top_k=1,
+    # save_last=True,
+    # monitor="val_bleu",
+    # every_n_epochs=args.eval_freq + 1,
+    # mode="max",
+    # dirpath=dirpath,
+    # filename="best-{epoch:03d}-{val_loss:.3f}-{val_bleu:.3f}",
+    # )
+    checkpoint_callback = SaveBestModelOnNEpochs(
+        save_every_n_epochs=args.eval_freq, 
+        monitor="val_bleu", mode="max", 
+        dirpath=dirpath)
     early_stop = EarlyStopping("val_loss", patience=args.epochs, mode="min", verbose=True)
     callbacks = [checkpoint_callback]
     manage_directory(args.save_csv)
@@ -143,7 +148,7 @@ def main(args):
                 csv_dire=args.save_csv)
 
 
-
+    tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
     data_module = DataModule(
                 root_text_path=args.text_path, 
                 data_config=args.data_config,
@@ -166,7 +171,7 @@ def main(args):
         callbacks=callbacks,
     )
     trainer.fit(model, data_module)
-    best_model_path = checkpoint_callback.best_model_path
+    best_model_path = checkpoint_callback.last_best_checkpoint_path
     print(f"Best model path: {best_model_path}")
     best_model = FineTuneModel.load_from_checkpoint(best_model_path)
     trainer.validate(best_model, data_module)

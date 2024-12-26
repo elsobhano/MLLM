@@ -1,6 +1,6 @@
 import torch
 from collections import OrderedDict
-
+from pytorch_lightning.callbacks import Callback
 import os
 
 def manage_directory(path):
@@ -82,3 +82,70 @@ class KLLoss(torch.nn.Module):
         probs2 = F.softmax(label * 10, 1)
         loss = self.error_metric(probs1, probs2) * batch_size
         return loss
+
+class SaveBestModelOnNEpochs(Callback):
+    def __init__(self, save_every_n_epochs, monitor, mode, dirpath, filename_template="best-epoch={epoch:03d}-val_loss={val_loss:.3f}-val_bleu={val_bleu:.3f}.ckpt"):
+        """
+        Args:
+            save_every_n_epochs (int): Save every N epochs.
+            monitor (str): Metric to monitor.
+            mode (str): One of {"min", "max"}.
+            dirpath (str): Directory to save checkpoints.
+            filename_template (str): Template for checkpoint filename. Use `{epoch}`, `{val_loss}`, `{val_bleu}` for naming.
+        """
+        super().__init__()
+        self.save_every_n_epochs = save_every_n_epochs
+        self.monitor = monitor
+        self.mode = mode
+        self.dirpath = dirpath
+        self.filename_template = filename_template
+        self.best_score = None
+        self.last_best_checkpoint_path = None  # Track the last best checkpoint
+
+        # Ensure the directory exists
+        os.makedirs(self.dirpath, exist_ok=True)
+
+        if self.mode not in ["min", "max"]:
+            raise ValueError("Mode should be either 'min' or 'max'")
+
+        if self.mode == "min":
+            self.best_score = float('inf')
+        else:
+            self.best_score = float('-inf')
+
+    def on_validation_end(self, trainer, pl_module):
+        current_epoch = trainer.current_epoch  # +1 to make epochs 1-based
+
+        # Check if we are at the right epoch to save a checkpoint
+        if current_epoch % self.save_every_n_epochs == 0 and current_epoch != 0:
+            current_score = trainer.callback_metrics.get(self.monitor)
+            if current_score is None:
+                print(f"Warning: {self.monitor} metric is not available. Skipping checkpoint saving.")
+                return
+
+            # Compare current score with the best score based on mode
+            is_best = (self.mode == "min" and current_score < self.best_score) or \
+                    (self.mode == "max" and current_score > self.best_score)
+
+            if is_best:
+                self.best_score = current_score
+
+                # Generate the new checkpoint filename
+                filename = self.filename_template.format(
+                    epoch=current_epoch,
+                    val_loss=trainer.callback_metrics.get("val_loss", 0.0),
+                    val_bleu=current_score,
+                )
+                new_checkpoint_path = os.path.join(self.dirpath, filename)
+
+                # Save the new best checkpoint
+                trainer.save_checkpoint(new_checkpoint_path)
+                print(f"New best checkpoint saved: {new_checkpoint_path}")
+
+                # Remove the previous best checkpoint if it exists
+                if self.last_best_checkpoint_path and os.path.exists(self.last_best_checkpoint_path):
+                    os.remove(self.last_best_checkpoint_path)
+                    print(f"Removed previous best checkpoint: {self.last_best_checkpoint_path}")
+
+                # Update the last best checkpoint path
+                self.last_best_checkpoint_path = new_checkpoint_path

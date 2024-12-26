@@ -50,6 +50,13 @@ class FineTuneModel(pl.LightningModule):
         ret = self.model.load_state_dict(new_state_dict, strict=False)
         print('Missing keys: \n', '\n'.join(ret.missing_keys))
         print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
+        for name, param in self.model.named_parameters():
+            if "backbone" in name or "mbart.base_model.model.model.encoder" in name:
+                param.requires_grad = False
+                print(f"Froze layer: {name}")
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                print(f"Unfroze layer: {name}")
         #################Initialize the tokenizer####################
         self.tokenizer = MBartTokenizer.from_pretrained(self.config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
         lang_code_to_id = self.tokenizer.lang_code_to_id['de_DE']

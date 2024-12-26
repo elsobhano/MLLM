@@ -105,15 +105,12 @@ class FeatureExtracter(nn.Module):
 class TextCLIP(nn.Module):
     def __init__(self, config=None, inplanes=1024, planes=1024, head_type='identy'):
         super(TextCLIP, self).__init__()
-
         self.model_txt = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder() 
-
-        self.lm_head = make_head(inplanes, planes, head_type)
 
     def forward(self, tgt_input):
         txt_logits = self.model_txt(input_ids=tgt_input['input_ids'], attention_mask=tgt_input['attention_mask'])[0]
-        output = txt_logits[torch.arange(txt_logits.shape[0]), tgt_input['input_ids'].argmax(dim=-1)]
-        return self.lm_head(output), txt_logits
+        txt_logits = txt_logits.mean(dim=1)
+        return txt_logits
 
 class ImageCLIP(nn.Module):
     def __init__(self, config, inplanes=1024, planes=1024, head_type='linear') :
@@ -169,13 +166,6 @@ class SLRCLIP(nn.Module):
         trainable_params_model_images = sum(p.numel() for p in self.model_images.parameters() if p.requires_grad)
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
-    def get_model_txt(self):
-        return self.model_txt
-    
-    @property
-    def get_encoder_hidden_states(self):
-        return self.encoder_hidden_states
-
     def compute_text_similarities_static(self, text_features):
         # Clone text features and disable gradient tracking
         text_features_static = text_features.clone().detach()
@@ -195,7 +185,7 @@ class SLRCLIP(nn.Module):
 
     def forward(self, src_input, tgt_input):
         image_features = self.model_images(src_input)
-        text_features, self.encoder_hidden_states = self.model_txt(tgt_input)
+        text_features = self.model_txt(tgt_input)
 
         # normalized features
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
@@ -211,9 +201,8 @@ class SLRCLIP(nn.Module):
         ground_truth = self.create_soft_target_matrix_with_gradients(
             batch_size=logits_per_image.shape[0],
             text_sim_matrix=text_sim_matrix,
-            scale_off_diag=0.5
+            scale_off_diag=0.0
         )
-
         return logits_per_image, logits_per_text, ground_truth
 
 def config_decoder(config):

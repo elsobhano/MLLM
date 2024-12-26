@@ -52,8 +52,8 @@ class S2T_Dataset(Dataset):
 
         ])
     def __len__(self):
-        return len(self.raw_data)
-        # return 10
+        # return len(self.raw_data)
+        return 10
     
     def __getitem__(self, index):
         # print(index)
