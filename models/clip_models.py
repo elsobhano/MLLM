@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import MBartForConditionalGeneration
-from models.i3d import InceptionI3d
 from peft import get_peft_model, LoraConfig, TaskType
 import numpy as np
 from torch import Tensor
@@ -43,7 +42,7 @@ class resnet(nn.Module):
             end = start + length
             x_batch.append(x[start:end])
             start = end
-        x = pad_sequence(x_batch,padding_value=PAD_IDX,batch_first=True)
+        x = pad_sequence(x_batch, padding_value=PAD_IDX, batch_first=True)
         return x
 
 class TemporalConv(nn.Module):
@@ -87,12 +86,6 @@ class RotaryPositionalEmbedding(nn.Module):
         sinusoid = torch.einsum("i,j->ij", position, inv_freq)
         self.register_buffer("sin", sinusoid.sin().unsqueeze(1).unsqueeze(1))  # [seq_len, 1, 1, dim//2]
         self.register_buffer("cos", sinusoid.cos().unsqueeze(1).unsqueeze(1))  # [seq_len, 1, 1, dim//2]
-
-    def rotate_half(self, x):
-        """Split the hidden dim and rotate half the dimensions"""
-        x = x.reshape(*x.shape[:-1], -1, 2)  # [..., dim//2, 2]
-        x1, x2 = x.unbind(-1)  # Split along last dimension
-        return torch.cat((-x2, x1), dim=-1)  # Rotate and concatenate
 
     def forward(self, q, k, seq_len):
         # q, k shape: [batch, heads, seq_len, head_dim]
@@ -190,11 +183,14 @@ class LightweightTemporalTransformer(nn.Module):
         attn = torch.matmul(q_rope, k_rope.transpose(-2, -1)) * self.scale
         
         # mask shape: [batch_size, seq_len] -> [batch_size, 1, 1, seq_len]
-        mask = mask.unsqueeze(1).unsqueeze(-1)
-        broadcasted_mask = mask.expand(-1, self.num_heads, -1, seq_len)
-        # The mask will broadcast from [batch_size, 1, 1, seq_len] to [batch_size, num_heads, seq_len, seq_len]
-        attn = attn.masked_fill(broadcasted_mask == 0, float('-inf'))
-            
+        # mask = mask.unsqueeze(1).unsqueeze(-1)
+        # broadcasted_mask = mask.expand(-1, self.num_heads, -1, seq_len)
+        # # The mask will broadcast from [batch_size, 1, 1, seq_len] to [batch_size, num_heads, seq_len, seq_len]
+        # attn = attn.masked_fill(broadcasted_mask == 0, float('-inf'))
+        # attn = attn.to(torch.float32)
+        # attn = torch.where(torch.isnan(attn), torch.full_like(attn, float('-1e3')), attn)
+        # attn = attn.to(torch.float16)
+        # Apply softmax
         attn = torch.softmax(attn, dim=-1)
         attn = self.dropout(attn)
         
@@ -223,7 +219,7 @@ class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False, resent_path=None):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet(resnet_path=resent_path) # InceptionI3d()
-        self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=1000)
+        self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=300)
 
         if frozen:
             for param in self.conv_2d.parameters():

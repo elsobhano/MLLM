@@ -104,32 +104,31 @@ class PreTrainModel(pl.LightningModule):
         return [optimizer], [scheduler]
 
     def configure_gradient_clipping(self, optimizer, gradient_clip_val, gradient_clip_algorithm):
+        self.clip_gradients(
+            optimizer,
+            gradient_clip_val=1.0,
+            gradient_clip_algorithm="norm",
+        )
         # Implement your own custom logic to clip gradients
         # You can call `self.clip_gradients` with your settings:
         
-        total_grad_norm_before = torch.sqrt(
-            sum(
-                (p.grad.norm(2) ** 2) for p in self.parameters() if p.grad is not None
-            )
-        )
+        # total_grad_norm_before = torch.sqrt(
+        #     sum(
+        #         (p.grad.norm(2) ** 2) for p in self.parameters() if p.grad is not None
+        #     )
+        # )
         
-        self.log("grad_norm_before", total_grad_norm_before, prog_bar=True, on_step=True, on_epoch=False)
+        # self.log("grad_norm_before", total_grad_norm_before, prog_bar=True, on_step=True, on_epoch=False)
         
         # self.clip_gradients(
         # optimizer,
         # gradient_clip_val=1.0,
         # gradient_clip_algorithm="value",
         # )
-        
-        self.clip_gradients(
-            optimizer,
-            gradient_clip_val=1.0,
-            gradient_clip_algorithm="norm",
-        )
-        total_grad_norm = torch.sqrt(
-            sum(
-                (p.grad.norm(2) ** 2) for p in self.parameters() if p.grad is not None
-            )
-        )
+        # total_grad_norm = torch.sqrt(
+        #     sum(
+        #         (p.grad.norm(2) ** 2) for p in self.parameters() if p.grad is not None
+        #     )
+        # )
         # Log the gradient norm to the progress bar
-        self.log("grad_norm_after", total_grad_norm, prog_bar=True, on_step=True, on_epoch=False)
+        # self.log("grad_norm_after", total_grad_norm, prog_bar=True, on_step=True, on_epoch=False)
