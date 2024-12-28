@@ -77,6 +77,142 @@ class TemporalConv(nn.Module):
         x = self.temporal_conv(x.permute(0,2,1))
         return x.permute(0,2,1)
 
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self, dim, max_seq_len=1000):
+        super().__init__()
+        self.dim = dim
+        # Create inverse frequency bands for half the dimension
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        position = torch.arange(max_seq_len).float()
+        sinusoid = torch.einsum("i,j->ij", position, inv_freq)
+        self.register_buffer("sin", sinusoid.sin().unsqueeze(1).unsqueeze(1))  # [seq_len, 1, 1, dim//2]
+        self.register_buffer("cos", sinusoid.cos().unsqueeze(1).unsqueeze(1))  # [seq_len, 1, 1, dim//2]
+
+    def rotate_half(self, x):
+        """Split the hidden dim and rotate half the dimensions"""
+        x = x.reshape(*x.shape[:-1], -1, 2)  # [..., dim//2, 2]
+        x1, x2 = x.unbind(-1)  # Split along last dimension
+        return torch.cat((-x2, x1), dim=-1)  # Rotate and concatenate
+
+    def forward(self, q, k, seq_len):
+        # q, k shape: [batch, heads, seq_len, head_dim]
+        
+        # Take required sequence length of position encodings
+        sin = self.sin[:seq_len]  # [seq_len, 1, 1, dim//2]
+        cos = self.cos[:seq_len]  # [seq_len, 1, 1, dim//2]
+        
+        # First, reshape q and k to split last dimension in half
+        q_split = q.reshape(*q.shape[:-1], -1, 2)  # [batch, heads, seq_len, dim//2, 2]
+        k_split = k.reshape(*k.shape[:-1], -1, 2)  # [batch, heads, seq_len, dim//2, 2]
+        
+        # Handle dimensions for broadcasting
+        sin = sin.expand(seq_len, q.size(0), q.size(1), q.size(-1)//2)  # [seq_len, batch, heads, dim//2]
+        cos = cos.expand(seq_len, q.size(0), q.size(1), q.size(-1)//2)  # [seq_len, batch, heads, dim//2]
+        
+        # Permute dimensions for proper broadcasting
+        sin = sin.permute(1, 2, 0, 3)  # [batch, heads, seq_len, dim//2]
+        cos = cos.permute(1, 2, 0, 3)  # [batch, heads, seq_len, dim//2]
+        
+        # Apply rotary embeddings
+        q_rot = torch.cat([
+            q_split[..., 0] * cos - q_split[..., 1] * sin,
+            q_split[..., 1] * cos + q_split[..., 0] * sin
+        ], dim=-1)
+        
+        k_rot = torch.cat([
+            k_split[..., 0] * cos - k_split[..., 1] * sin,
+            k_split[..., 1] * cos + k_split[..., 0] * sin
+        ], dim=-1)
+        
+        return q_rot, k_rot
+
+# The rest of LightweightTemporalTransformer remains the same
+class LightweightTemporalTransformer(nn.Module):
+    def __init__(self, input_dim, hidden_dim=32, num_heads=2, dropout=0.1, max_seq_len=1000):
+        super().__init__()
+        assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
+        
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
+        
+        # Input projection
+        self.input_projection = nn.Linear(input_dim, hidden_dim)
+        
+        # Transformer components
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        
+        # QKV projections
+        self.q_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.k_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.v_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.o_proj = nn.Linear(hidden_dim, hidden_dim)
+        
+        # RoPE
+        self.rope = RotaryPositionalEmbedding(self.head_dim, max_seq_len)
+        
+        # FFN
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, hidden_dim)
+        )
+        
+        self.dropout = nn.Dropout(dropout)
+        self.scale = self.head_dim ** -0.5
+        
+    def forward(self, x, mask=None):
+        batch_size, seq_len, _ = x.shape
+        
+        # Project input
+        x = self.input_projection(x)
+        
+        # Attention block
+        residual = x
+        x = self.norm1(x)
+        
+        # QKV projections
+        q = self.q_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim)
+        k = self.k_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim)
+        v = self.v_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim)
+        
+        # Transpose for attention
+        q = q.transpose(1, 2)  # (batch, heads, seq_len, head_dim)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        
+        # Apply RoPE to queries and keys
+        q_rope, k_rope = self.rope(q, k, seq_len)
+        
+        # Compute attention
+        attn = torch.matmul(q_rope, k_rope.transpose(-2, -1)) * self.scale
+        
+        # mask shape: [batch_size, seq_len] -> [batch_size, 1, 1, seq_len]
+        mask = mask.unsqueeze(1).unsqueeze(-1)
+        broadcasted_mask = mask.expand(-1, self.num_heads, -1, seq_len)
+        # The mask will broadcast from [batch_size, 1, 1, seq_len] to [batch_size, num_heads, seq_len, seq_len]
+        attn = attn.masked_fill(broadcasted_mask == 0, float('-inf'))
+            
+        attn = torch.softmax(attn, dim=-1)
+        attn = self.dropout(attn)
+        
+        # Apply attention to values
+        out = torch.matmul(attn, v)
+        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_dim)
+        out = self.o_proj(out)
+        
+        x = residual + self.dropout(out)
+        
+        # FFN block
+        residual = x
+        x = self.norm2(x)
+        x = self.ffn(x)
+        x = residual + x
+        
+        return x
+
 def make_head(inplanes, planes, head_type):
     if head_type == 'linear':
         return nn.Linear(inplanes, planes, bias=False)
@@ -87,7 +223,7 @@ class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False, resent_path=None):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet(resnet_path=resent_path) # InceptionI3d()
-        self.conv_1d = TemporalConv(input_size=512, hidden_size=1024, conv_type=2)
+        self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=1000)
 
         if frozen:
             for param in self.conv_2d.parameters():
@@ -95,11 +231,12 @@ class FeatureExtracter(nn.Module):
 
     def forward(self,
                 src: Tensor,
-                src_length_batch
+                src_length_batch,
+                mask,
                 ):
         # src shape: (all_frames_in_batch, 3, 224, 224)
-        src = self.conv_2d(src,src_length_batch) #(batch_size, seq_len, dim=512)
-        src = self.conv_1d(src) #(batch_size, new_seq_len, new_dim=1024)
+        src = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
+        src = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=1024)
 
         return src
 
@@ -142,7 +279,7 @@ class ImageCLIP(nn.Module):
         self.lm_head = make_head(inplanes, planes, head_type)
         
     def forward(self, src_input):
-        x = self.model(src_input['input_ids'], src_input['src_length_batch']) # [b, n, c]
+        x = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         attention_mask = src_input['attention_mask']
 
         B, N, C = x.shape

@@ -94,7 +94,7 @@ def main(args):
     dirpath=dirpath,
     filename="best-{epoch:03d}-{val_loss:.3f}",
     )
-    
+    # monitor_gradient_norm = MonitorGradientNorm()
     early_stop = EarlyStopping("val_loss", patience=args.epochs, mode="min", verbose=True)
     callbacks = [checkpoint_callback]
     # manage_directory(args.save_csv)
