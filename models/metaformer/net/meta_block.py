@@ -3,10 +3,23 @@ import torch
 from timm.models.layers import DropPath, trunc_normal_
 from xformers.components import build_attention
 from models.metaformer.net.multiheaddispatch import MultiHeadDispatch
-from xformers.components.feedforward import build_feedforward
+# from xformers.components.feedforward import build_feedforward
 import models.metaformer.net.attentions.local_mask_attention
 
+class FeedForward(nn.Module):
+    def __init__(self, config, **kwargs):
+        super().__init__()
+        dim, dropout = config["dim_model"], config["dropout"]
+        self.net = nn.Sequential(
+            nn.Linear(dim, dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim * 4, dim),
+            nn.Dropout(dropout)
+        )
 
+    def forward(self, x):
+        return self.net(x)
 class MetaFormerBlock(nn.Module):
     def __init__(
         self,
@@ -43,7 +56,7 @@ class MetaFormerBlock(nn.Module):
         mlp_params = dict(mlp_params)
         mlp_params["dim_model"] = dim
         mlp_params["dim_model_out"] = dim
-        self.mlp = build_feedforward(mlp_params)
+        self.mlp = FeedForward(mlp_params)
 
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.use_layer_scale = use_layer_scale

@@ -1,10 +1,22 @@
 import torch
 import torch.nn as nn
-import xformers.components.positional_embedding as PE
-from xformers.components.positional_embedding import build_positional_embedding
-import models.metaformer.emb.my_no_pos
-import models.metaformer.emb.my_sine
+import math
+# from transformers import PositionalEncoding
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        max_len=5000
+        d_model = config["dim_model"]
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0))
+
+    def forward(self, x):
+        return x + self.pe[:, :x.size(1)]
 
 class Model(nn.Module):
     def __init__(self, in_dim, d_model, pos_config, num_embed_tokens = None):
@@ -13,7 +25,7 @@ class Model(nn.Module):
             self.linear = nn.Linear(in_dim, d_model)
         else:
             self.linear = nn.Identity()
-        self.pos_emb = build_positional_embedding(pos_config)
+        self.pos_emb = PositionalEncoding(pos_config)
         self.num_embed_tokens = num_embed_tokens
         if num_embed_tokens:
             self.embed_tokens = torch.nn.Embedding(num_embed_tokens, d_model)

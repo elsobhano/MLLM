@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import MBartForConditionalGeneration
 from peft import get_peft_model, LoraConfig, TaskType
+from models.metaformer.meta_model import MetaFormer
 import numpy as np
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
@@ -44,179 +45,6 @@ class resnet(nn.Module):
             start = end
         x = pad_sequence(x_batch, padding_value=PAD_IDX, batch_first=True)
         return x
-
-class TemporalConv(nn.Module):
-    def __init__(self, input_size, hidden_size, conv_type=2):
-        super(TemporalConv, self).__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.conv_type = conv_type
-
-        if self.conv_type == 0:
-            self.kernel_size = ['K3']
-        elif self.conv_type == 1:
-            self.kernel_size = ['K5', "P2"]
-        elif self.conv_type == 2:
-            self.kernel_size = ['K5', "P2", 'K5', "P2"]
-
-        modules = []
-        for layer_idx, ks in enumerate(self.kernel_size):
-            input_sz = self.input_size if layer_idx == 0 else self.hidden_size
-            if ks[0] == 'P':
-                modules.append(nn.MaxPool1d(kernel_size=int(ks[1]), ceil_mode=False))
-            elif ks[0] == 'K':
-                modules.append(
-                    nn.Conv1d(input_sz, self.hidden_size, kernel_size=int(ks[1]), stride=1, padding=0)
-                )
-                modules.append(nn.BatchNorm1d(self.hidden_size))
-                modules.append(nn.ReLU(inplace=True))
-        self.temporal_conv = nn.Sequential(*modules)
-    
-    def forward(self, x):
-        x = self.temporal_conv(x.permute(0,2,1))
-        return x.permute(0,2,1)
-
-class RotaryPositionalEmbedding(nn.Module):
-    def __init__(self, dim, max_seq_len=1000):
-        super().__init__()
-        self.dim = dim
-        # Create inverse frequency bands for half the dimension
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
-        position = torch.arange(max_seq_len).float()
-        sinusoid = torch.einsum("i,j->ij", position, inv_freq)
-        self.register_buffer("sin", sinusoid.sin().unsqueeze(1).unsqueeze(1))  # [seq_len, 1, 1, dim//2]
-        self.register_buffer("cos", sinusoid.cos().unsqueeze(1).unsqueeze(1))  # [seq_len, 1, 1, dim//2]
-
-    def forward(self, q, k, seq_len):
-        # q, k shape: [batch, heads, seq_len, head_dim]
-        
-        # Take required sequence length of position encodings
-        sin = self.sin[:seq_len]  # [seq_len, 1, 1, dim//2]
-        cos = self.cos[:seq_len]  # [seq_len, 1, 1, dim//2]
-        
-        # First, reshape q and k to split last dimension in half
-        q_split = q.reshape(*q.shape[:-1], -1, 2)  # [batch, heads, seq_len, dim//2, 2]
-        k_split = k.reshape(*k.shape[:-1], -1, 2)  # [batch, heads, seq_len, dim//2, 2]
-        
-        # Handle dimensions for broadcasting
-        sin = sin.expand(seq_len, q.size(0), q.size(1), q.size(-1)//2)  # [seq_len, batch, heads, dim//2]
-        cos = cos.expand(seq_len, q.size(0), q.size(1), q.size(-1)//2)  # [seq_len, batch, heads, dim//2]
-        
-        # Permute dimensions for proper broadcasting
-        sin = sin.permute(1, 2, 0, 3)  # [batch, heads, seq_len, dim//2]
-        cos = cos.permute(1, 2, 0, 3)  # [batch, heads, seq_len, dim//2]
-        
-        # Apply rotary embeddings
-        q_rot = torch.cat([
-            q_split[..., 0] * cos - q_split[..., 1] * sin,
-            q_split[..., 1] * cos + q_split[..., 0] * sin
-        ], dim=-1)
-        
-        k_rot = torch.cat([
-            k_split[..., 0] * cos - k_split[..., 1] * sin,
-            k_split[..., 1] * cos + k_split[..., 0] * sin
-        ], dim=-1)
-        
-        return q_rot, k_rot
-
-# The rest of LightweightTemporalTransformer remains the same
-class LightweightTemporalTransformer(nn.Module):
-    def __init__(self, input_dim, hidden_dim=32, num_heads=2, dropout=0.1, max_seq_len=1000):
-        super().__init__()
-        assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
-        
-        self.hidden_dim = hidden_dim
-        self.num_heads = num_heads
-        self.head_dim = hidden_dim // num_heads
-        
-        # Input projection
-        self.input_projection = nn.Linear(input_dim, hidden_dim)
-        
-        # Transformer components
-        self.norm1 = nn.LayerNorm(hidden_dim)
-        self.norm2 = nn.LayerNorm(hidden_dim)
-        
-        # QKV projections
-        self.q_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.k_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.v_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.o_proj = nn.Linear(hidden_dim, hidden_dim)
-        
-        # RoPE
-        self.rope = RotaryPositionalEmbedding(self.head_dim, max_seq_len)
-        
-        # FFN
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 2, hidden_dim)
-        )
-        
-        self.dropout = nn.Dropout(dropout)
-        self.scale = self.head_dim ** -0.5
-        
-    def forward(self, x, mask=None):
-        batch_size, seq_len, _ = x.shape
-        
-        # Project input
-        x = self.input_projection(x)
-        
-        # Attention block
-        residual = x
-        x = self.norm1(x)
-        
-        # QKV projections
-        q = self.q_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim)
-        k = self.k_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim)
-        v = self.v_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim)
-        
-        # Transpose for attention
-        q = q.transpose(1, 2)  # (batch, heads, seq_len, head_dim)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
-        
-        # Apply RoPE to queries and keys
-        q_rope, k_rope = self.rope(q, k, seq_len)
-        
-        # Compute attention
-        attn = torch.matmul(q_rope, k_rope.transpose(-2, -1)) * self.scale
-        
-        # mask shape: [batch_size, seq_len] -> [batch_size, 1, 1, seq_len]
-        mask = mask.unsqueeze(1).unsqueeze(-1)
-        broadcasted_mask = mask.expand(-1, self.num_heads, -1, seq_len)
-        # # The mask will broadcast from [batch_size, 1, 1, seq_len] to [batch_size, num_heads, seq_len, seq_len]
-        attn = attn.masked_fill(broadcasted_mask == 0, float('-1e4'))
-        valid_positions = broadcasted_mask.sum(dim=-1, keepdim=True)  # Count valid positions
-        all_masked = valid_positions == 0
-        if all_masked.any():
-                # Create uniform attention for rows where all positions are masked
-                uniform_attention = torch.zeros_like(attn)
-                uniform_attention = uniform_attention.masked_fill(broadcasted_mask.bool(), 1.0)
-                uniform_attention = uniform_attention / (valid_positions.clamp(min=1))
-                attn = torch.where(all_masked, uniform_attention, attn)
-        # attn = attn.to(torch.float32)
-        # attn = torch.where(torch.isnan(attn), torch.full_like(attn, float('-1e3')), attn)
-        # attn = attn.to(torch.float16)
-        # Apply softmax
-        attn = torch.softmax(attn, dim=-1)
-        attn = self.dropout(attn)
-        
-        # Apply attention to values
-        out = torch.matmul(attn, v)
-        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_dim)
-        out = self.o_proj(out)
-        
-        x = residual + self.dropout(out)
-        
-        # FFN block
-        residual = x
-        x = self.norm2(x)
-        x = self.ffn(x)
-        x = residual + x
-        
-        return x
-
 def make_head(inplanes, planes, head_type):
     if head_type == 'linear':
         return nn.Linear(inplanes, planes, bias=False)
@@ -227,8 +55,53 @@ class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False, resent_path=None):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet(resnet_path=resent_path) # InceptionI3d()
-        self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=300)
+        
+        dim_model = 512
+        dropout = 0.1
+        num_heads = 8
 
+        params = {
+                "inits": "xavier",
+                "emb_name": "models.metaformer.emb.sine_pos",
+                "emb_params": {
+                    "in_dim": dim_model,
+                    "d_model": dim_model,
+                    "pos_config": {"name": "my_sine", "dim_model": dim_model},
+                },
+                "net_name": "models.metaformer.net.downsampler_net",
+                "net_params": {
+                    "drop_path_rate": dropout,
+                    "use_layer_scale": True,
+                    "layer_scale_init_value": 1e-5,
+                    "layer_norm_type": "post",
+                    "layers": [2, 2],
+                    "downsamples": [True],
+                    "embed_dims": [dim_model, dim_model],
+                    "mixer_params": {
+                        "residual_dropout": dropout,
+                        "num_heads": num_heads,
+                        "use_rotary_embeddings": True,
+                    },
+                    "attention_params": {
+                        "name": "local_mask",
+                        "dropout": dropout,
+                        "window_size": 7,
+                    },
+                    "mlp_params": {
+                        "name": "MLP",
+                        "hidden_layer_multiplier": 4,
+                        "activation": "gelu",
+                        "d_model": dim_model,
+                        "dropout": dropout,
+                    }
+                },
+                "post_name": "models.metaformer.post.identity_head",
+                "post_params": {
+                    "d_model": dim_model,
+                },
+            }
+
+        self.conv_1d = MetaFormer(**params)
         if frozen:
             for param in self.conv_2d.parameters():
                 param.requires_grad = False

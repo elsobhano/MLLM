@@ -101,7 +101,7 @@ class LocalMaskAttention(Attention):
                 torch.eye(mask.shape[1], device=mask.device).unsqueeze(0) == 1
             )
 
-            mask = (~mask).type(q.dtype).masked_fill(~mask, torch.finfo(q.dtype).min)
+            mask = (~mask).type(q.dtype).masked_fill(~mask.bool(), torch.finfo(q.dtype).min)
 
         if self.training:
             return xops.memory_efficient_attention(
