@@ -223,7 +223,7 @@ class DataModule(pl.LightningDataModule):
             self.data_config = data_config
         
         if data_ver != 0:
-            self.data_config['data']['lmdb_path'] = self.data_config['data']['lmdb_path'] + f'-{data_ver}'
+            self.data_config['data']['lmdb_path_images'] = self.data_config['data']['lmdb_path_images'] + f'-{data_ver}'
 
         self.resize = resize
         self.input_size = input_size
