@@ -37,31 +37,51 @@ class PreTrainModel(pl.LightningModule):
         self.log('learning_rate', lr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def training_step(self, batch, batch_idx):
-        logits_per_image, logits_per_text, ground_truth = self(batch)
+        logits_per_image, logits_per_text, ground_truth, predicted_desc = self(batch)
+        desc_feats = batch[0]['desc_feats']
+
+        l2_loss = torch.nn.functional.mse_loss(predicted_desc, desc_feats, reduction='mean')
+        self.log("train_l2_loss", l2_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        total_loss = (loss_imgs + loss_texts)/2.0
+        loss_align = (loss_imgs + loss_texts)/2.0
+        self.log("train_align_loss", loss_align, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
+        total_loss = loss_align + self.config['model']['alpha'] * l2_loss
         self.log("train_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        logits_per_image, logits_per_text, ground_truth = self(batch)
+        logits_per_image, logits_per_text, ground_truth, predicted_desc = self(batch)
+        desc_feats = batch[0]['desc_feats']
+
+        l2_loss = torch.nn.functional.mse_loss(predicted_desc, desc_feats, reduction='mean')
+        self.log("val_l2_loss", l2_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        total_loss = (loss_imgs + loss_texts)/2.0
+        loss_align = (loss_imgs + loss_texts)/2.0
+        self.log("val_align_loss", loss_align, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
+        total_loss = loss_align + self.config['model']['alpha'] * l2_loss
         self.log("val_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return total_loss
     
     def test_step(self, batch, batch_idx):
-        logits_per_image, logits_per_text, ground_truth = self(batch)
+        logits_per_image, logits_per_text, ground_truth, predicted_desc = self(batch)
+        desc_feats = batch[0]['desc_feats']
+
+        l2_loss = torch.nn.functional.mse_loss(predicted_desc, desc_feats, reduction='mean')
+        self.log("test_l2_loss", l2_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        total_loss = (loss_imgs + loss_texts)/2.0
-
-        self.log("test_loss", total_loss, sync_dist=True)
+        loss_align = (loss_imgs + loss_texts)/2.0
+        self.log("test_align_loss", loss_align, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
+        total_loss = loss_align + self.config['model']['alpha'] * l2_loss
+        self.log("test_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return total_loss
 
     def add_weight_decay(self, weight_decay, skip_list=()):

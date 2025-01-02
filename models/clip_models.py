@@ -11,12 +11,32 @@ import torchvision
 import math
 PAD_IDX = 1
 
+def make_resnet(name='resnet18', resnet_path=None):
+    if name == 'resnet18':
+        model = torchvision.models.resnet18(pretrained=False)
+    elif name == 'resnet34':
+        model = torchvision.models.resnet34(pretrained=True)
+    elif name == 'resnet50':
+        model = torchvision.models.resnet50(pretrained=True)
+    elif name == 'resnet101':
+        model = torchvision.models.resnet101(pretrained=True)
+
+
+    state_dict = torch.load(resnet_path, map_location='cpu', weights_only=True)
+
+    # Load the weights into the model
+    model.load_state_dict(state_dict)
+    inchannel = model.fc.in_features
+    model.fc = nn.Identity()
+    return model
+
 class resnet(nn.Module):
     def __init__(self, resnet_path):
         super(resnet, self).__init__()
+        self.resnet = make_resnet(name='resnet18', resnet_path=resnet_path)
 
     def forward(self, x, lengths):
-        # x = self.resnet(x)
+        x = self.resnet(x)
         x_batch = []
         start = 0
         for length in lengths:
@@ -25,6 +45,18 @@ class resnet(nn.Module):
             start = end
         x = pad_sequence(x_batch,padding_value=PAD_IDX,batch_first=True)
         return x
+    
+class MLPMapper(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.mapper = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),  # First linear layer
+            nn.ReLU(),                        # Non-linear activation
+            nn.Linear(hidden_dim, output_dim) # Second linear layer
+        )
+    
+    def forward(self, x):
+        return self.mapper(x)
 
 class TemporalConv(nn.Module):
     def __init__(self, input_size, hidden_size, conv_type=2):
@@ -52,22 +84,27 @@ class TemporalConv(nn.Module):
                 modules.append(nn.BatchNorm1d(self.hidden_size))
                 modules.append(nn.ReLU(inplace=True))
         self.temporal_conv = nn.Sequential(*modules)
+
+        self.mlp_mapper = MLPMapper(input_dim=self.hidden_size, hidden_dim=self.hidden_size, output_dim=self.hidden_size)
     
     def forward(self, x):
         x = self.temporal_conv(x.permute(0,2,1))
-        return x.permute(0,2,1)
+        x = self.mlp_mapper(x.permute(0,2,1))
+        return x
 
 def make_head(inplanes, planes, head_type):
     if head_type == 'linear':
         return nn.Linear(inplanes, planes, bias=False)
     else:
         return nn.Identity()
+
     
 class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False, resent_path=None):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet(resnet_path=resent_path) # InceptionI3d()
-        self.conv_1d = TemporalConv(input_size=1024, hidden_size=1024, conv_type=2)
+        # self.conv_1d = TemporalConv(input_size=1024, hidden_size=1024, conv_type=2)
+        # self.desc_mapper = DescriptionMLPMapper(input_dim=512, hidden_dim=1024, output_dim=1024)
 
         if frozen:
             for param in self.conv_2d.parameters():
@@ -78,7 +115,8 @@ class FeatureExtracter(nn.Module):
                 src_length_batch
                 ):
         src = self.conv_2d(src,src_length_batch)
-        src = self.conv_1d(src)
+        # src = self.conv_1d(src)
+        # src = self.desc_mapper(src)
 
         return src
 
@@ -100,6 +138,8 @@ class ImageCLIP(nn.Module):
         super(ImageCLIP, self).__init__()
         self.config = config
         self.model =  FeatureExtracter(resent_path=config['model']['resnet'])
+        self.desc_mapper = MLPMapper(input_dim=512, hidden_dim=1024, output_dim=1024)
+        self.modality_adapter = TemporalConv(input_size=1536, hidden_size=1024, conv_type=2)
 
         trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
         lora_config = LoraConfig(
@@ -124,10 +164,13 @@ class ImageCLIP(nn.Module):
         self.lm_head = make_head(inplanes, planes, head_type)
         
     def forward(self, src_input):
-        x = self.model(src_input['input_ids'], src_input['src_length_batch']) # [b, n, c]
+        visual_features = self.model(src_input['input_ids'], src_input['src_length_batch']) # [b, n, c]
+        predicted_desc = self.desc_mapper(visual_features)
         attention_mask = src_input['attention_mask']
+        x = torch.cat((visual_features, predicted_desc), dim=-1)
+        x = self.modality_adapter(x)
 
-        B, N, C = x.shape
+        B, N, C = x.shape 
         cls_token = self.cls_token.repeat(B, 1, 1)
         x = torch.cat((cls_token, x), dim=1)
         attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
@@ -135,7 +178,7 @@ class ImageCLIP(nn.Module):
         outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
         last_hidden_state = outs['last_hidden_state']
         output = self.lm_head(last_hidden_state[:, 0, :])
-        return output
+        return output, predicted_desc
 
 class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
@@ -174,7 +217,7 @@ class SLRCLIP(nn.Module):
         return target_matrix
 
     def forward(self, src_input, tgt_input):
-        image_features = self.model_images(src_input)
+        image_features, predicted_desc = self.model_images(src_input)
         text_features, self.encoder_hidden_states = self.model_txt(tgt_input)
 
         # normalized features
@@ -191,10 +234,10 @@ class SLRCLIP(nn.Module):
         ground_truth = self.create_soft_target_matrix_with_gradients(
             batch_size=logits_per_image.shape[0],
             text_sim_matrix=text_sim_matrix,
-            scale_off_diag=0.5
+            scale_off_diag=0.0,
         )
 
-        return logits_per_image, logits_per_text, ground_truth
+        return logits_per_image, logits_per_text, ground_truth, predicted_desc
 
 def config_decoder(config):
     from transformers import AutoConfig

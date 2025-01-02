@@ -36,9 +36,24 @@ class S2T_Dataset(Dataset):
         self.tokenizer = tokenizer
 
         self.lmdb_path = config['data']['lmdb_path']
+        self.lmdb_path_images = config['data']['lmdb_path_images']
         self.phase = phase
         self.max_length = config['data']['max_length']
-        self.list = [key for key,value in self.raw_data.items()]   
+        self.list = [key for key,value in self.raw_data.items()]
+
+        sometimes = lambda aug: va.Sometimes(0.5, aug) # Used to apply augmentor with 50% probability
+        self.seq = va.Sequential([
+            # va.RandomCrop(size=(240, 180)), # randomly crop video with a size of (240 x 180)
+            # va.RandomRotate(degrees=10), # randomly rotates the video with a degree randomly choosen from [-10, 10]  
+            sometimes(va.RandomRotate(30)),
+            sometimes(va.RandomResize(0.2)),
+            # va.RandomCrop(size=(256, 256)),
+            sometimes(va.RandomTranslate(x=10, y=10)),
+
+            # sometimes(Brightness(min=0.1, max=1.5)),
+            # sometimes(Contrast(min=0.1, max=2.0)),
+
+        ])
 
     def __len__(self):
         return len(self.raw_data)
@@ -51,10 +66,11 @@ class S2T_Dataset(Dataset):
         name_sample = sample['name']
         tgt_sample = sample['text']
         
-        img_sample = self.load_data(name_sample)
+        desc_sample = self.load_data(name_sample)
+        img_sample = self.load_imgs(name_sample)
         # print(img_sample.shape)
         # print('Hello World!')
-        return name_sample, img_sample, tgt_sample
+        return name_sample, img_sample, desc_sample, tgt_sample
     
     def load_data(self, file_name):
         phase, file_name = file_name.split('/')
@@ -62,21 +78,47 @@ class S2T_Dataset(Dataset):
         # print(folder, file_name)
         data = torch.from_numpy(read_lmdb_folder(folder, file_name + '_desc'))
         return data
+    
+    def load_imgs(self, file_name):
+        phase, file_name = file_name.split('/')
+        folder = os.path.join(self.lmdb_path_images, phase)
+        # print(folder, file_name)
+        images = read_lmdb_folder(folder, file_name)
+        len_imgs = len(images)
+        
+        if len_imgs > self.max_length:
+            images = images[:self.max_length]
+            len_imgs = len(images)
+        
+        imgs = torch.zeros(len_imgs,3, 224,224)
+        crop_rect, resize = data_augmentation(resize=(256, 256), crop_size=224, is_train=(self.phase=='train'))
+        data_transform = transforms.Compose([
+                                    transforms.ToTensor(),
+                                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), 
+                                    ])
+        batch_image = []
+        for i,img in enumerate(images):
+            # print(img.shape)
+            img = np.transpose(img, (1, 2, 0))
+            # img = np.transpose(img, (0, 1, 2))
+            img = Image.fromarray(img)
+            batch_image.append(img)
+        
+        if self.phase == 'train':
+            batch_image = self.seq(batch_image)
+        
+        for i, img in enumerate(batch_image):
+            img = img.resize(resize)
+            img = data_transform(img).unsqueeze(0)
+            imgs[i,:,:,:] = img[:,:,crop_rect[1]:crop_rect[3],crop_rect[0]:crop_rect[2]]
+
+        return imgs
 
     def __str__(self):
         return f'#total {self.phase} set: {len(self.list)}.'
     
-    def collate_fn(self, batch):
-        tgt_batch,img_tmp,src_length_batch,name_batch = [],[],[],[]
-
-        for name_sample, img_sample, tgt_sample in batch:
-
-            name_batch.append(name_sample)
-
-            img_tmp.append(img_sample)
-
-            tgt_batch.append(tgt_sample)
-
+    def collate_fn_images(self, img_tmp):
+        src_length_batch = []
         max_len = max([len(vid) for vid in img_tmp])
         video_length = torch.LongTensor([np.ceil(len(vid) / 4.0) * 4 + 16 for vid in img_tmp])
         left_pad = 8
@@ -84,14 +126,14 @@ class S2T_Dataset(Dataset):
         max_len = max_len + left_pad + right_pad
         padded_video = [torch.cat(
             (
-                vid[0][None].expand(left_pad, -1),
+                vid[0][None].expand(left_pad, -1, -1, -1),
                 vid,
-                vid[-1][None].expand(max_len - len(vid) - left_pad, -1),
+                vid[-1][None].expand(max_len - len(vid) - left_pad, -1, -1, -1),
             )
             , dim=0)
             for vid in img_tmp]
         
-        img_tmp = [padded_video[i][0:video_length[i],:] for i in range(len(padded_video))]
+        img_tmp = [padded_video[i][0:video_length[i],:,:,:] for i in range(len(padded_video))]
         
         for i in range(len(img_tmp)):
             src_length_batch.append(len(img_tmp[i]))
@@ -107,16 +149,51 @@ class S2T_Dataset(Dataset):
             mask_gen.append(tmp)
         mask_gen = pad_sequence(mask_gen, padding_value=PAD_IDX,batch_first=True)
         img_padding_mask = (mask_gen != PAD_IDX).long()
+
+        return img_batch, img_padding_mask, src_length_batch, new_src_lengths
+
+    def collate_fn_text(self, img_tmp):
+        max_len = max([len(vid) for vid in img_tmp])
+        video_length = torch.LongTensor([np.ceil(len(vid) / 4.0) * 4 + 16 for vid in img_tmp])
+        left_pad = 8
+        right_pad = int(np.ceil(max_len / 4.0)) * 4 - max_len + 8
+        max_len = max_len + left_pad + right_pad
+        padded_video = [torch.cat(
+            (
+                vid[0][None].expand(left_pad, -1),
+                vid,
+                vid[-1][None].expand(max_len - len(vid) - left_pad, -1),
+            )
+            , dim=0)
+            for vid in img_tmp]
+        
+        img_tmp = [padded_video[i][0:video_length[i],:] for i in range(len(padded_video))]
+        img_batch = pad_sequence(img_tmp,padding_value=PAD_IDX,batch_first=True)
+
+        return img_batch
+    
+    def collate_fn(self, batch):
+        tgt_batch,img_tmp,src_length_batch,name_batch, desc_tmp = [],[],[],[],[]
+
+        for name_sample, img_sample, desc_sample, tgt_sample in batch:
+
+            name_batch.append(name_sample)
+            img_tmp.append(img_sample)
+            tgt_batch.append(tgt_sample)
+            desc_tmp.append(desc_sample)
+
+        img_batch, mask, src_length_batch, new_src_lengths = self.collate_fn_images(img_tmp)
+        desc_batch = self.collate_fn_text(desc_tmp)
+        
         with self.tokenizer.as_target_tokenizer():
             tgt_input = self.tokenizer(tgt_batch, return_tensors="pt", padding = True, max_length=self.max_words, truncation=True)
 
         src_input = {}
         src_input['input_ids'] = img_batch
-        src_input['attention_mask'] = img_padding_mask
+        src_input['desc_feats'] = desc_batch
+        src_input['attention_mask'] = mask
         src_input['name_batch'] = name_batch
-
         src_input['src_length_batch'] = src_length_batch
-        src_input['new_src_length_batch'] = new_src_lengths
         
         return src_input, tgt_input
     
