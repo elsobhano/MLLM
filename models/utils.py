@@ -117,7 +117,7 @@ class SaveBestModelOnNEpochs(Callback):
         current_epoch = trainer.current_epoch  # +1 to make epochs 1-based
 
         # Check if we are at the right epoch to save a checkpoint
-        if current_epoch % self.save_every_n_epochs == 0 and current_epoch != 0:
+        if (current_epoch+1) % self.save_every_n_epochs == 0 and current_epoch != 0:
             current_score = trainer.callback_metrics.get(self.monitor)
             if current_score is None:
                 print(f"Warning: {self.monitor} metric is not available. Skipping checkpoint saving.")

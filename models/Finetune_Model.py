@@ -42,14 +42,14 @@ class FineTuneModel(pl.LightningModule):
         state_dict = torch.load(args.model_ckpt, map_location='cpu')['state_dict']
         new_state_dict = OrderedDict()
         for k, v in state_dict.items():
-            k = '.'.join(k.split('.')[1:])
-            new_state_dict[k] = v
-        #     if 'conv_2d' in k or 'conv_1d' in k:
-        #         k = 'backbone.'+'.'.join(k.split('.')[3:])
-        #         new_state_dict[k] = v
-        #     if 'trans_encoder' in k:
-        #         k = 'mbart.base_model.model.model.encoder.'+'.'.join(k.split('.')[5:])
-        #         new_state_dict[k] = v
+            # k = '.'.join(k.split('.')[1:])
+            # new_state_dict[k] = v
+            if 'conv_2d' in k or 'conv_1d' in k:
+                k = 'backbone.'+'.'.join(k.split('.')[3:])
+                new_state_dict[k] = v
+            if 'trans_encoder' in k:
+                k = 'mbart.base_model.model.model.encoder.'+'.'.join(k.split('.')[5:])
+                new_state_dict[k] = v
 
         ret = self.model.load_state_dict(new_state_dict, strict=False)
         print('Missing keys: \n', '\n'.join(ret.missing_keys))
@@ -124,12 +124,12 @@ class FineTuneModel(pl.LightningModule):
             self.validation_decoded_teacher = []
             self.validation_step_outputs = []
 
-        elif (self.current_epoch) % self.eval_freq == 0 and self.current_epoch != 0:
+        # elif (self.current_epoch) % self.eval_freq == 0 and self.current_epoch != 0:
             hypotheses = []
             hypotheses_teacher = []
             tgt_refs = []
             for idx in range(self.trainer.world_size):
-                df = pd.read_csv(self.csv_dire + f"val_outputs_{self.current_epoch}_{idx}.csv", sep='|')
+                df = pd.read_csv(self.csv_dire + f"val_outputs_{self.current_epoch+1}_{idx}.csv", sep='|')
                 hypotheses.extend([str(item) for item in df['hypotheses'].tolist()]) # df['hypotheses'].tolist()
                 hypotheses_teacher.extend([str(item) for item in df['hypotheses_teacher'].tolist()]) # df['hypotheses_teacher'].tolist()
                 tgt_refs.extend([str(item) for item in df['targets'].tolist()]) # df['targets'].tolist()

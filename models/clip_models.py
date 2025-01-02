@@ -183,10 +183,18 @@ class LightweightTemporalTransformer(nn.Module):
         attn = torch.matmul(q_rope, k_rope.transpose(-2, -1)) * self.scale
         
         # mask shape: [batch_size, seq_len] -> [batch_size, 1, 1, seq_len]
-        # mask = mask.unsqueeze(1).unsqueeze(-1)
-        # broadcasted_mask = mask.expand(-1, self.num_heads, -1, seq_len)
+        mask = mask.unsqueeze(1).unsqueeze(-1)
+        broadcasted_mask = mask.expand(-1, self.num_heads, -1, seq_len)
         # # The mask will broadcast from [batch_size, 1, 1, seq_len] to [batch_size, num_heads, seq_len, seq_len]
-        # attn = attn.masked_fill(broadcasted_mask == 0, float('-inf'))
+        attn = attn.masked_fill(broadcasted_mask == 0, float('-1e4'))
+        valid_positions = broadcasted_mask.sum(dim=-1, keepdim=True)  # Count valid positions
+        all_masked = valid_positions == 0
+        if all_masked.any():
+                # Create uniform attention for rows where all positions are masked
+                uniform_attention = torch.zeros_like(attn)
+                uniform_attention = uniform_attention.masked_fill(broadcasted_mask.bool(), 1.0)
+                uniform_attention = uniform_attention / (valid_positions.clamp(min=1))
+                attn = torch.where(all_masked, uniform_attention, attn)
         # attn = attn.to(torch.float32)
         # attn = torch.where(torch.isnan(attn), torch.full_like(attn, float('-1e3')), attn)
         # attn = attn.to(torch.float16)
@@ -413,7 +421,7 @@ class gloss_free_model(nn.Module):
 
     def share_forward(self, src_input):
         
-        frames_feature = self.backbone(src_input['input_ids'], src_input['src_length_batch'])
+        frames_feature = self.backbone(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask'])
         attention_mask = src_input['attention_mask']
 
         inputs_embeds = self.sign_emb(frames_feature)

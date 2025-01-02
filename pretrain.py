@@ -30,7 +30,7 @@ def get_args_parser():
                         help='Path to the MBart tokenizer.')
     parser.add_argument('--encoder_ckpt', type=str, default=None, help='Path to the encoder checkpoint.')
     parser.add_argument('--model_ckpt', type=str, default=None, help='Path to the model checkpoint.')
-    parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate.')
+    parser.add_argument('--lr', type=float, default=8e-4, help='Learning rate.')
     ##################Data Params##########################################################
     parser.add_argument('--text_path', type=str, default="/mnt/fast/nobackup/users/sa04359/CLIP/MLLM/data/labels", 
                         help='Path to the text data.')
