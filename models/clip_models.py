@@ -120,6 +120,89 @@ class RotaryPositionalEmbedding(nn.Module):
         return q_rot, k_rot
 
 # The rest of LightweightTemporalTransformer remains the same
+class FeedForward(nn.Module):
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        super().__init__()
+        self.linear1 = nn.Linear(d_model, d_ff)
+        self.linear2 = nn.Linear(d_ff, d_model)
+        self.activation = nn.GELU()
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        return self.linear2(self.dropout(self.activation(self.linear1(x))))
+
+class MoE(nn.Module):
+    def __init__(self, d_model, num_experts, top_k):
+        super().__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.experts = nn.ModuleList([FeedForward(d_model, d_model*2) for _ in range(num_experts)])
+        self.gate = nn.Linear(d_model, num_experts)
+
+    def forward(self, x):
+        # Gating mechanism
+        gate_logits = self.gate(x)  # [batch_size, seq_len, num_experts]
+        gate_probs = torch.softmax(gate_logits, dim=-1)
+        top_k_gate_probs, top_k_indices = torch.topk(gate_probs, self.top_k, dim=-1)
+
+        # Sparse combination of experts
+        output = torch.zeros_like(x)
+        for i in range(self.top_k):
+            expert_mask = top_k_indices == i
+            expert_output = self.experts[i](x)
+            output += expert_mask.float() * expert_output * top_k_gate_probs[..., i:i+1]
+
+        return output
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, num_heads):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads
+
+        assert self.head_dim * num_heads == d_model, "d_model must be divisible by num_heads"
+
+        # Linear layers for Q, K, V
+        self.query = nn.Linear(d_model, d_model)
+        self.key = nn.Linear(d_model, d_model)
+        self.value = nn.Linear(d_model, d_model)
+        self.rope = RotaryPositionalEmbedding(self.head_dim, max_seq_len=500)
+
+        # Output linear layer
+        self.out = nn.Linear(d_model, d_model)
+
+    def forward(self, query, key, value, mask=None):
+        batch_size, seq_len, _ = query.shape
+
+        # Linear projections for Q, K, V
+        Q = self.query(query)  # [batch_size, seq_len, d_model]
+        K = self.key(key)      # [batch_size, seq_len, d_model]
+        V = self.value(value)  # [batch_size, seq_len, d_model]
+
+        # Reshape Q, K, V for multi-head attention
+        Q = Q.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
+        K = K.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
+        V = V.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
+
+        # Apply RoPE
+        Q, K = self.rope(Q, K, seq_len)
+        
+        # Scaled dot-product attention
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))  # [batch_size, num_heads, seq_len, seq_len]
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, float('-inf'))
+        attention_weights = F.softmax(scores, dim=-1)  # [batch_size, num_heads, seq_len, seq_len]
+
+        # Apply attention to V
+        attention_output = torch.matmul(attention_weights, V)  # [batch_size, num_heads, seq_len, head_dim]
+
+        # Concatenate heads and apply output linear layer
+        attention_output = attention_output.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)  # [batch_size, seq_len, d_model]
+        output = self.out(attention_output)  # [batch_size, seq_len, d_model]
+
+        return output, attention_weights
+
 class LightweightTemporalTransformer(nn.Module):
     def __init__(self, input_dim, hidden_dim=32, num_heads=2, dropout=0.1, max_seq_len=1000):
         super().__init__()
@@ -146,13 +229,13 @@ class LightweightTemporalTransformer(nn.Module):
         self.rope = RotaryPositionalEmbedding(self.head_dim, max_seq_len)
         
         # FFN
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 2, hidden_dim)
-        )
-        
+        # self.ffn = nn.Sequential(
+        #     nn.Linear(hidden_dim, hidden_dim * 2),
+        #     nn.GELU(),
+        #     nn.Dropout(dropout),
+        #     nn.Linear(hidden_dim * 2, hidden_dim)
+        # )
+        self.moe = MoE(hidden_dim, num_experts=4, top_k=2)
         self.dropout = nn.Dropout(dropout)
         self.scale = self.head_dim ** -0.5
         
@@ -212,7 +295,8 @@ class LightweightTemporalTransformer(nn.Module):
         # FFN block
         residual = x
         x = self.norm2(x)
-        x = self.ffn(x)
+        # x = self.ffn(x)
+        moe_output = self.moe(x)
         x = residual + x
         
         return x
