@@ -34,6 +34,8 @@ class FineTuneModel(pl.LightningModule):
         self.args = args
         ################Set the Sign Encoder####################
         self.model = gloss_free_model(self.config, self.args)
+        # for k, v in self.model.named_parameters():
+        #     print(k)
         print('***********************************')
         print('Load parameters from Pretrained...')
         print('***********************************')
@@ -45,6 +47,12 @@ class FineTuneModel(pl.LightningModule):
                 new_state_dict[k] = v
             if 'trans_encoder' in k:
                 k = 'mbart.base_model.model.model.encoder.'+'.'.join(k.split('.')[5:])
+                new_state_dict[k] = v
+            if 'modality_adapter' in k:
+                k = '.'.join(k.split('.')[2:])
+                new_state_dict[k] = v
+            if 'desc_mapper' in k:
+                k = '.'.join(k.split('.')[2:])
                 new_state_dict[k] = v
 
         ret = self.model.load_state_dict(new_state_dict, strict=False)

@@ -286,6 +286,8 @@ class gloss_free_model(nn.Module):
         self.args = args
 
         self.backbone = FeatureExtracter(frozen=False, resent_path=self.config['model']['resnet'])
+        self.desc_mapper = MLPMapper(input_dim=512, hidden_dim=1024, output_dim=1024)
+        self.modality_adapter = TemporalConv(input_size=1536, hidden_size=1024, conv_type=2)
         # self.mbart = MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder'])
         self.mbart = config_decoder(config)
 
@@ -304,22 +306,23 @@ class gloss_free_model(nn.Module):
             if "lora" in name:
                 param.requires_grad = True
 
-        if config['model']['sign_proj']:
-            self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=embed_dim, config = config)
-            self.embed_scale = math.sqrt(embed_dim) if config['training']['scale_embedding'] else 1.0
-        else:
-            self.sign_emb = nn.Identity()
-            self.embed_scale = 1.0
+        # if config['model']['sign_proj']:
+        #     self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=embed_dim, config = config)
+        #     self.embed_scale = math.sqrt(embed_dim) if config['training']['scale_embedding'] else 1.0
+        # else:
+        #     self.sign_emb = nn.Identity()
+        #     self.embed_scale = 1.0
 
     def share_forward(self, src_input):
         
-        frames_feature = self.backbone(src_input['input_ids'], src_input['src_length_batch'])
+        visual_features = self.backbone(src_input['input_ids'], src_input['src_length_batch'])
         attention_mask = src_input['attention_mask']
-
-        inputs_embeds = self.sign_emb(frames_feature)
-        inputs_embeds = self.embed_scale * inputs_embeds
-
-        return inputs_embeds, attention_mask
+        predicted_desc = self.desc_mapper(visual_features)
+        
+        x = torch.cat((visual_features, predicted_desc), dim=-1)
+        x = self.modality_adapter(x)
+        
+        return x, attention_mask
 
     def forward(self,src_input, tgt_input):
         
