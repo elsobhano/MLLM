@@ -77,6 +77,8 @@ class S2T_Dataset(Dataset):
         folder = os.path.join(self.lmdb_path, phase)
         # print(folder, file_name)
         data = torch.from_numpy(read_lmdb_folder(folder, file_name + '_desc'))
+        if data.shape[0] > self.max_length:
+            data = data[:self.max_length]
         return data
     
     def load_imgs(self, file_name):
