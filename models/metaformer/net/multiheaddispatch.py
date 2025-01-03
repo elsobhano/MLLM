@@ -46,7 +46,7 @@ def _fold_heads(t: torch.Tensor, B: int, S: int, H: int, Hs: int):
 
 # Move head forward and fold into batch dim. dimensions become (B, nh, S, hs)
 def _split_heads(t: torch.Tensor, B: int, S: int, H: int, Hs: int):
-    return t.view(B, S, H, Hs).transpose(1, 2)
+    return t.view(B, S, H, Hs)
 
 
 class MultiHeadDispatch(nn.Module):
@@ -226,14 +226,23 @@ class MultiHeadDispatch(nn.Module):
         # Optional: rotary embedding, add relative positioning information
         if self.rotary_embeddings:
             # rotary requires the head dimension
-            q = _split_heads(q, B, S_Q, self.num_heads, self.dim_key_head)
-            k = _split_heads(k, B, S_K, self.num_heads, self.dim_key_head)
-            v = _split_heads(v, B, S_K, self.num_heads, self.dim_value_head)
+            q = _split_heads(q, B, self.num_heads, S_Q, self.dim_key_head)
+            k = _split_heads(k, B, self.num_heads, S_K, self.dim_key_head)
+            v = _split_heads(v, B, self.num_heads, S_K, self.dim_value_head)
 
             q, k = self.rotary_embeddings(q=q, k=k)
 
-            if not self.attention.requires_head_dimension:
-                q, k, v = q.flatten(0, 1), k.flatten(0, 1), v.flatten(0, 1)
+            # self.attention.requires_head_dimension = True
+            # if not self.attention.requires_head_dimension:
+            #     q, k, v = q.flatten(0, 1), k.flatten(0, 1), v.flatten(0, 1)
+
+            # reshape_fn = (
+            #     _split_heads if self.attention.requires_head_dimension else _fold_heads
+            # )
+
+            # q = reshape_fn(q, B, S_Q, self.num_heads, self.dim_key_head)
+            # k = reshape_fn(k, B, S_K, self.num_heads, self.dim_key_head)
+            # v = reshape_fn(v, B, S_K, self.num_heads, self.dim_value_head)
 
         else:
             # Reshape k/q/v to either expose the heads, or fold the head dimension into the batch

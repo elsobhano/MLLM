@@ -64,7 +64,7 @@ class LocalMaskAttention(Attention):
 
     def _get_local_mask(self, shape: torch.Size) -> torch.Tensor:
         window_size = self.window_size * 2 + 1 if self.causal else self.window_size
-        mask = local_1d_pattern(shape[1], window_size)
+        mask = local_1d_pattern(shape[2], window_size)
 
         if self.causal:
             mask &= causal_1d_pattern(shape[1])
@@ -88,7 +88,7 @@ class LocalMaskAttention(Attention):
         else:
             if isinstance(att_mask, AttentionMask):
                 att_mask = att_mask.to_bool()
-            heads = v.shape[0] // att_mask.shape[0]
+            heads = v.shape[1]
             am = (
                 att_mask.unsqueeze(1)
                 .expand(att_mask.shape[0], heads, att_mask.shape[-1])
@@ -101,11 +101,45 @@ class LocalMaskAttention(Attention):
                 torch.eye(mask.shape[1], device=mask.device).unsqueeze(0) == 1
             )
 
-            mask = (~mask).type(q.dtype).masked_fill(~mask.bool(), torch.finfo(q.dtype).min)
-
-        if self.training:
-            return xops.memory_efficient_attention(
-                q, k, v, attn_bias=mask, p=self.attn_drop
+            mask = (~mask).type(q.dtype).masked_fill(~mask, torch.finfo(q.dtype).min)
+            mask = mask.reshape(q.shape[0], heads, mask.shape[-2], mask.shape[-1])
+        # if self.training:
+            return custom_attention(
+                q, k, v, attn_bias=mask, dropout_p=self.attn_drop
             )
-        else:
-            return xops.memory_efficient_attention(q, k, v, attn_bias=mask, p=0.0)
+        # else:
+        #     return xops.memory_efficient_attention(q, k, v, attn_bias=mask, p=0.0)
+
+import torch
+import torch.nn.functional as F
+
+def custom_attention(q, k, v, attn_bias=None, dropout_p=0.0):
+    """
+    Custom scaled dot-product attention implementation.
+    Args:
+        q: Query tensor of shape (batch_size, num_heads, seq_len_q, head_dim)
+        k: Key tensor of shape (batch_size, num_heads, seq_len_k, head_dim)
+        v: Value tensor of shape (batch_size, num_heads, seq_len_k, head_dim)
+        attn_bias: Optional attention bias or mask of shape (batch_size, num_heads, seq_len_q, seq_len_k)
+        dropout_p: Dropout probability to apply on attention weights.
+    Returns:
+        Output tensor of shape (batch_size, num_heads, seq_len_q, head_dim)
+    """
+    # Compute scaled dot-product attention scores
+    d_k = q.size(-1)  # Head dimension
+    scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(d_k, dtype=q.dtype, device=q.device))
+    
+    # Add attention bias if provided
+    if attn_bias is not None:
+        scores += attn_bias
+
+    # Apply softmax to get attention weights
+    attn_weights = F.softmax(scores, dim=-1)
+
+    # Apply dropout if required
+    if dropout_p > 0.0:
+        attn_weights = F.dropout(attn_weights, p=dropout_p, training=True)
+
+    # Compute the attention output
+    output = torch.matmul(attn_weights, v)
+    return output

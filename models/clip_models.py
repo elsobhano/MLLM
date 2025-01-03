@@ -34,18 +34,36 @@ class resnet(nn.Module):
     def __init__(self, resnet_path):
         super(resnet, self).__init__()
         self.resnet = make_resnet(name='resnet18', resnet_path=resnet_path)
+    
+    def pad(self, tensor, length):
+        return torch.cat(
+            [
+                tensor,
+                tensor.new(length - tensor.size(0), *tensor.size()[1:]).zero_(),
+            ]
+        )
 
     def forward(self, x, lengths):
-        x = self.resnet(x)
-        x_batch = []
-        start = 0
-        for length in lengths:
-            end = start + length
-            x_batch.append(x[start:end])
-            start = end
-        x = pad_sequence(x_batch, padding_value=PAD_IDX, batch_first=True)
-        return x
+        y = self.resnet(x)
+        max_len = max(lengths)
+        y = torch.cat(
+            [
+                self.pad(y[sum(lengths[:idx]) : sum(lengths[: idx + 1])], max_len)
+                for idx, lgt in enumerate(lengths)
+            ]
+        )
+        y = y.reshape(len(lengths), max_len, y.shape[1])
+        mask = torch.zeros(
+            y.shape[0],
+            y.shape[1],
+            device=y.device,
+        )
+        for i, l in enumerate(lengths):
+            mask[i, :l] = 1
+        mask = mask.bool()
+        return y, mask
 def make_head(inplanes, planes, head_type):
+    
     if head_type == 'linear':
         return nn.Linear(inplanes, planes, bias=False)
     else:
@@ -98,6 +116,7 @@ class FeatureExtracter(nn.Module):
                 "post_name": "models.metaformer.post.identity_head",
                 "post_params": {
                     "d_model": dim_model,
+                    "out_dim": 1024
                 },
             }
 
@@ -112,8 +131,8 @@ class FeatureExtracter(nn.Module):
                 mask,
                 ):
         # src shape: (all_frames_in_batch, 3, 224, 224)
-        src = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
-        src = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=1024)
+        src, new_mask = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
+        src = self.conv_1d(src, new_mask) #(batch_size, new_seq_len, new_dim=1024)
 
         return src
 
@@ -153,11 +172,12 @@ class ImageCLIP(nn.Module):
     
         self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
 
-        self.lm_head = make_head(inplanes, planes, head_type)
+        # self.lm_head = make_head(inplanes, planes, head_type)
         
     def forward(self, src_input):
-        x = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
-        attention_mask = src_input['attention_mask']
+        output = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
+        x = output['post_output']['x']
+        attention_mask = output['post_output']['mask']
 
         B, N, C = x.shape
         cls_token = self.cls_token.repeat(B, 1, 1)
@@ -166,7 +186,8 @@ class ImageCLIP(nn.Module):
 
         outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
         last_hidden_state = outs['last_hidden_state']
-        output = self.lm_head(last_hidden_state[:, 0, :])
+        # output = self.lm_head(last_hidden_state[:, 0, :])
+        output = last_hidden_state.mean(dim=1)
         return output
 
 class SLRCLIP(nn.Module):

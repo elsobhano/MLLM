@@ -129,7 +129,7 @@ class S2T_Dataset(Dataset):
 
         src_input = {}
         src_input['input_ids'] = img_batch
-        src_input['attention_mask'] = mask
+        src_input['attention_mask'] = mask.bool()
         src_input['name_batch'] = name_batch
         src_input['src_length_batch'] = src_length_batch
         
