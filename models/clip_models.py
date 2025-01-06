@@ -301,6 +301,92 @@ class LightweightTemporalTransformer(nn.Module):
         
         return x
 
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, num_heads, dropout=0.1, max_seq_len=300):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads
+
+        assert self.head_dim * num_heads == d_model, "d_model must be divisible by num_heads"
+
+        # Linear layers for Q, K, V
+        self.query_proj = nn.Linear(d_model, d_model)
+        self.key_proj = nn.Linear(d_model, d_model)
+        self.value_proj = nn.Linear(d_model, d_model)
+
+        # Rotary positional embeddings
+        self.rotary_emb = RotaryPositionalEmbedding(self.head_dim, max_seq_len)
+
+        # Dropout
+        self.dropout = nn.Dropout(dropout)
+
+
+    def forward(self, query, key, value, mask=None):
+        batch_size, seq_len, embed_dim = query.shape
+
+        # Linear projections
+        query = self.query_proj(query)  # (batch_size, seq_len, embed_dim)
+        key = self.key_proj(key)        # (batch_size, seq_len, embed_dim)
+        value = self.value_proj(value)  # (batch_size, seq_len, embed_dim)
+
+        # Reshape to (batch_size, seq_len, num_heads, head_dim)
+        query = query.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        key = key.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        value = value.view(batch_size, seq_len, self.num_heads, self.head_dim)
+
+        # Transpose for attention computation: (batch_size, num_heads, seq_len, head_dim)
+        query = query.transpose(1, 2)
+        key = key.transpose(1, 2)
+        value = value.transpose(1, 2)
+
+        # Apply rotary positional embeddings
+        query, key = self.rotary_emb(query, key, seq_len)
+
+        # Scaled dot-product attention
+        scores = torch.matmul(query, key.transpose(-2, -1)) / (self.head_dim ** 0.5)  # (batch_size, num_heads, seq_len, seq_len)
+
+        # Apply mask (if provided)
+        if mask is not None:
+            # Reshape mask to (batch_size, 1, 1, seq_len) for broadcasting
+            mask = mask.unsqueeze(1).unsqueeze(1)  # (batch_size, 1, 1, seq_len)
+            # Apply mask to scores
+            scores = scores.masked_fill(mask == 0, float('-inf'))  # Replace masked positions with -inf
+
+        # Softmax and dropout
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        # Apply attention to values
+        attn_output = torch.matmul(attn_weights, value)  # (batch_size, num_heads, seq_len, head_dim)
+
+        # Concatenate heads and project output
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)  # (batch_size, seq_len, embed_dim)
+
+        return attn_output
+
+class TransformerBlock(nn.Module):
+    def __init__(self, d_model, num_heads, d_llm):
+        super().__init__()
+        self.attention = MultiHeadAttention(d_model=d_model, num_heads=num_heads)
+        self.ffn = FeedForward(d_model, d_model*2)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.output_proj = nn.Linear(d_model, d_llm)
+
+    def forward(self, x, mask=None):
+        attn_output = self.attention(x, x, x, mask)
+        x = x + attn_output
+        x = self.norm1(x)
+
+        ffn_output = self.ffn(x)
+        x = x + ffn_output
+        x = self.norm2(x)
+
+        x = self.output_proj(x)
+
+        return x
+
 def make_head(inplanes, planes, head_type):
     if head_type == 'linear':
         return nn.Linear(inplanes, planes, bias=False)
@@ -311,7 +397,8 @@ class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False, resent_path=None):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet(resnet_path=resent_path) # InceptionI3d()
-        self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=300)
+        # self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=300)
+        self.conv_1d = TransformerBlock(d_model=512, num_heads=8, d_llm=1024)
 
         if frozen:
             for param in self.conv_2d.parameters():
@@ -364,8 +451,6 @@ class ImageCLIP(nn.Module):
     
         self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
 
-        self.lm_head = make_head(inplanes, planes, head_type)
-        
     def forward(self, src_input):
         x = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         attention_mask = src_input['attention_mask']
@@ -377,8 +462,8 @@ class ImageCLIP(nn.Module):
 
         outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
         last_hidden_state = outs['last_hidden_state']
-        output = self.lm_head(last_hidden_state[:, 0, :])
-        return output
+        img_logits = last_hidden_state.mean(dim=1)
+        return img_logits
 
 class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
@@ -427,7 +512,7 @@ class SLRCLIP(nn.Module):
         ground_truth = self.create_soft_target_matrix_with_gradients(
             batch_size=logits_per_image.shape[0],
             text_sim_matrix=text_sim_matrix,
-            scale_off_diag=0.0
+            scale_off_diag=0.0,
         )
         return logits_per_image, logits_per_text, ground_truth
 
@@ -444,32 +529,32 @@ class V_encoder(nn.Module):
     def __init__(self,
                 emb_size,
                 feature_size,
-                config,
                 ):
         super(V_encoder, self).__init__()
-        
-        self.config = config
 
+        # Linear layer to project input features to embedding size
         self.src_emb = nn.Linear(feature_size, emb_size)
+
+        # Replace BatchNorm1d with LayerNorm and ReLU with GELU
         modules = []
-        modules.append(nn.BatchNorm1d(emb_size))
-        modules.append(nn.ReLU(inplace=True))
+        modules.append(nn.LayerNorm(emb_size))  # LayerNorm operates on the last dimension
+        modules.append(nn.GELU())  # Use GELU instead of ReLU
         self.bn_ac = nn.Sequential(*modules)
 
+        # Initialize weights
         for m in self.modules():
-            if isinstance(m, (nn.Conv1d,nn.Linear)):
+            if isinstance(m, (nn.Conv1d, nn.Linear)):
                 nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain('relu'))
-            elif isinstance(m, nn.BatchNorm1d):
+            elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-    
-    def forward(self,
-                src,
-                ):
-        src = self.src_emb(src)
-        src = self.bn_ac(src.permute(0,2,1)).permute(0,2,1)
 
-        return src
+    def forward(self, src):
+        # Project input features to embedding size
+        src = self.src_emb(src)  # Shape: (batch_size, seq_length, emb_size)
+        # Apply LayerNorm and GELU
+        src = self.bn_ac(src)  # No need to permute dimensions for LayerNorm
+        return src  # Shape: (batch_size, seq_length, emb_size)
 
 class gloss_free_model(nn.Module):
     def __init__(self, config, args, embed_dim=1024, pretrain=None):
@@ -497,7 +582,7 @@ class gloss_free_model(nn.Module):
                 param.requires_grad = True
 
         if config['model']['sign_proj']:
-            self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=embed_dim, config = config)
+            self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=embed_dim)
             self.embed_scale = math.sqrt(embed_dim) if config['training']['scale_embedding'] else 1.0
         else:
             self.sign_emb = nn.Identity()
