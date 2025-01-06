@@ -134,6 +134,7 @@ class FeedForward(nn.Module):
 class MoE(nn.Module):
     def __init__(self, d_model, num_experts, top_k):
         super().__init__()
+        self.d_model = d_model
         self.num_experts = num_experts
         self.top_k = top_k
         self.experts = nn.ModuleList([FeedForward(d_model, d_model*2) for _ in range(num_experts)])
@@ -148,11 +149,34 @@ class MoE(nn.Module):
         # Sparse combination of experts
         output = torch.zeros_like(x)
         for i in range(self.top_k):
-            expert_mask = top_k_indices == i
+            expert_mask = (top_k_indices[..., i] == i).unsqueeze(-1)
+            expert_mask = expert_mask.expand(-1, -1, self.d_model)
             expert_output = self.experts[i](x)
+            # print(expert_output.shape, expert_mask.shape, top_k_gate_probs[..., i:i+1].shape)
             output += expert_mask.float() * expert_output * top_k_gate_probs[..., i:i+1]
+        
+        # Compute load balancing loss
+        load_balancing_loss = self.compute_load_balancing_loss(gate_probs, top_k_indices)
 
-        return output
+        return output, load_balancing_loss
+    def compute_load_balancing_loss(self, gate_probs, top_k_indices):
+        # Compute expert usage (how often each expert is in the top-k)
+        # Flatten the top_k_indices to count expert occurrences
+        top_k_indices_flat = top_k_indices.view(-1)  # [batch_size * seq_len * top_k]
+
+        expert_usage = torch.zeros(self.num_experts, device=gate_probs.device)  # [num_experts]
+        for i in range(self.top_k):
+            expert_usage += (top_k_indices_flat == i).float().sum()  # Sum over batch and sequence
+
+        # Normalize expert usage
+        expert_usage = expert_usage / expert_usage.sum()
+
+        # Compute load balancing loss
+        mean_usage = expert_usage.mean()
+        std_usage = expert_usage.std()
+        load_balancing_loss = (std_usage / mean_usage) ** 2
+
+        return load_balancing_loss
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, num_heads):
@@ -173,6 +197,7 @@ class MultiHeadAttention(nn.Module):
         self.out = nn.Linear(d_model, d_model)
 
     def forward(self, query, key, value, mask=None):
+        mask = None
         batch_size, seq_len, _ = query.shape
 
         # Linear projections for Q, K, V
@@ -187,7 +212,7 @@ class MultiHeadAttention(nn.Module):
 
         # Apply RoPE
         Q, K = self.rope(Q, K, seq_len)
-        
+
         # Scaled dot-product attention
         scores = torch.matmul(Q, K.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))  # [batch_size, num_heads, seq_len, seq_len]
         if mask is not None:
@@ -202,6 +227,30 @@ class MultiHeadAttention(nn.Module):
         output = self.out(attention_output)  # [batch_size, seq_len, d_model]
 
         return output, attention_weights
+
+class TransformerBlockWithMoE(nn.Module):
+    def __init__(self, d_model, num_heads, d_llm, num_experts, top_k):
+        super().__init__()
+        self.attention = MultiHeadAttention(d_model, num_heads)  # Custom multi-head attention
+        self.moe = MoE(d_model, num_experts, top_k)        # MoE layer
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.output_proj = nn.Linear(d_model, d_llm)
+
+    def forward(self, x, mask=None):
+        # Self-attention
+        attn_output, _ = self.attention(x, x, x, mask)  # Use custom multi-head attention
+        x = x + attn_output
+        x = self.norm1(x)
+
+        # MoE feedforward
+        moe_output, load_balancing_loss = self.moe(x)
+        x = x + moe_output
+        x = self.norm2(x)
+
+        x = self.output_proj(x)
+
+        return x, load_balancing_loss
 
 class LightweightTemporalTransformer(nn.Module):
     def __init__(self, input_dim, hidden_dim=32, num_heads=2, dropout=0.1, max_seq_len=1000):
@@ -311,7 +360,8 @@ class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False, resent_path=None):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet(resnet_path=resent_path) # InceptionI3d()
-        self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=300)
+        # self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=300)
+        self.conv_1d = TransformerBlockWithMoE(d_model=512, num_heads=8, d_llm=1024, num_experts=4, top_k=2)
 
         if frozen:
             for param in self.conv_2d.parameters():
@@ -324,9 +374,9 @@ class FeatureExtracter(nn.Module):
                 ):
         # src shape: (all_frames_in_batch, 3, 224, 224)
         src = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
-        src = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=1024)
+        src, load_balancing_loss = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=1024)
 
-        return src
+        return src, load_balancing_loss
 
 class TextCLIP(nn.Module):
     def __init__(self, config=None, inplanes=1024, planes=1024, head_type='identy'):
@@ -364,10 +414,10 @@ class ImageCLIP(nn.Module):
     
         self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
 
-        self.lm_head = make_head(inplanes, planes, head_type)
+        # self.lm_head = make_head(inplanes, planes, head_type)
         
     def forward(self, src_input):
-        x = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
+        x, load_balancing_loss = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         attention_mask = src_input['attention_mask']
 
         B, N, C = x.shape
@@ -376,9 +426,9 @@ class ImageCLIP(nn.Module):
         attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
 
         outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
-        last_hidden_state = outs['last_hidden_state']
-        output = self.lm_head(last_hidden_state[:, 0, :])
-        return output
+        output = outs['last_hidden_state']
+        # output = self.lm_head(last_hidden_state[:, 0, :])
+        return output.mean(dim=1), load_balancing_loss
 
 class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
@@ -410,7 +460,7 @@ class SLRCLIP(nn.Module):
         return target_matrix
 
     def forward(self, src_input, tgt_input):
-        image_features = self.model_images(src_input)
+        image_features, load_balancing_loss = self.model_images(src_input)
         text_features = self.model_txt(tgt_input)
 
         # normalized features
@@ -429,7 +479,7 @@ class SLRCLIP(nn.Module):
             text_sim_matrix=text_sim_matrix,
             scale_off_diag=0.0
         )
-        return logits_per_image, logits_per_text, ground_truth
+        return logits_per_image, logits_per_text, ground_truth, load_balancing_loss
 
 def config_decoder(config):
     from transformers import AutoConfig

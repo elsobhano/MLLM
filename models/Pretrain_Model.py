@@ -37,38 +37,41 @@ class PreTrainModel(pl.LightningModule):
         self.log('learning_rate', lr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def training_step(self, batch, batch_idx):
-        logits_per_image, logits_per_text, ground_truth = self(batch)
+        logits_per_image, logits_per_text, ground_truth, load_balancing_loss = self(batch)
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        total_loss = (loss_imgs + loss_texts)/2.0
+        align_loss = (loss_imgs + loss_texts)/2.0
         
+        total_loss = align_loss + 0.01 * load_balancing_loss
+
+        self.log("train_align_loss", align_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("train_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
-        # Log gradient norm
-        # total_norm = 0.0
-        # for p in self.parameters():
-        #     if p.grad is not None:
-        #         total_norm += p.grad.norm(2).item()
-        # self.log("grad_norm", total_norm, on_step=True, on_epoch=False, prog_bar=True, sync_dist=True)
 
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        logits_per_image, logits_per_text, ground_truth = self(batch)
+        logits_per_image, logits_per_text, ground_truth, load_balancing_loss = self(batch)
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        total_loss = (loss_imgs + loss_texts)/2.0
+        align_loss = (loss_imgs + loss_texts)/2.0
         
+        total_loss = align_loss + 0.01 * load_balancing_loss
+        
+        self.log("val_align_loss", align_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return total_loss
     
     def test_step(self, batch, batch_idx):
-        logits_per_image, logits_per_text, ground_truth = self(batch)
+        logits_per_image, logits_per_text, ground_truth, load_balancing_loss = self(batch)
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        total_loss = (loss_imgs + loss_texts)/2.0
+        align_loss = (loss_imgs + loss_texts)/2.0
+        
+        total_loss = align_loss + 0.01 * load_balancing_loss
 
-        self.log("test_loss", total_loss, sync_dist=True)
+        self.log("test_align_loss", align_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("test_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
         return total_loss
 
