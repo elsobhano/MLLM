@@ -179,7 +179,7 @@ class MoE(nn.Module):
         return load_balancing_loss
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, num_heads):
+    def __init__(self, d_model, num_heads, dropout=0.1, max_seq_len=300):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
@@ -188,45 +188,81 @@ class MultiHeadAttention(nn.Module):
         assert self.head_dim * num_heads == d_model, "d_model must be divisible by num_heads"
 
         # Linear layers for Q, K, V
-        self.query = nn.Linear(d_model, d_model)
-        self.key = nn.Linear(d_model, d_model)
-        self.value = nn.Linear(d_model, d_model)
-        self.rope = RotaryPositionalEmbedding(self.head_dim, max_seq_len=500)
+        self.query_proj = nn.Linear(d_model, d_model)
+        self.key_proj = nn.Linear(d_model, d_model)
+        self.value_proj = nn.Linear(d_model, d_model)
 
-        # Output linear layer
-        self.out = nn.Linear(d_model, d_model)
+        # Rotary positional embeddings
+        self.rotary_emb = RotaryPositionalEmbedding(self.head_dim, max_seq_len)
+
+        # Dropout
+        self.dropout = nn.Dropout(dropout)
+
 
     def forward(self, query, key, value, mask=None):
-        mask = None
-        batch_size, seq_len, _ = query.shape
+        batch_size, seq_len, embed_dim = query.shape
 
-        # Linear projections for Q, K, V
-        Q = self.query(query)  # [batch_size, seq_len, d_model]
-        K = self.key(key)      # [batch_size, seq_len, d_model]
-        V = self.value(value)  # [batch_size, seq_len, d_model]
+        # Linear projections
+        query = self.query_proj(query)  # (batch_size, seq_len, embed_dim)
+        key = self.key_proj(key)        # (batch_size, seq_len, embed_dim)
+        value = self.value_proj(value)  # (batch_size, seq_len, embed_dim)
 
-        # Reshape Q, K, V for multi-head attention
-        Q = Q.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
-        K = K.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
-        V = V.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
+        # Reshape to (batch_size, seq_len, num_heads, head_dim)
+        query = query.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        key = key.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        value = value.view(batch_size, seq_len, self.num_heads, self.head_dim)
 
-        # Apply RoPE
-        Q, K = self.rope(Q, K, seq_len)
+        # Transpose for attention computation: (batch_size, num_heads, seq_len, head_dim)
+        query = query.transpose(1, 2)
+        key = key.transpose(1, 2)
+        value = value.transpose(1, 2)
+
+        # Apply rotary positional embeddings
+        query, key = self.rotary_emb(query, key, seq_len)
 
         # Scaled dot-product attention
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))  # [batch_size, num_heads, seq_len, seq_len]
+        scores = torch.matmul(query, key.transpose(-2, -1)) / (self.head_dim ** 0.5)  # (batch_size, num_heads, seq_len, seq_len)
+
+        # Apply mask (if provided)
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, float('-inf'))
-        attention_weights = F.softmax(scores, dim=-1)  # [batch_size, num_heads, seq_len, seq_len]
+            # Reshape mask to (batch_size, 1, 1, seq_len) for broadcasting
+            mask = mask.unsqueeze(1).unsqueeze(1)  # (batch_size, 1, 1, seq_len)
+            # Apply mask to scores
+            scores = scores.masked_fill(mask == 0, float('-inf'))  # Replace masked positions with -inf
 
-        # Apply attention to V
-        attention_output = torch.matmul(attention_weights, V)  # [batch_size, num_heads, seq_len, head_dim]
+        # Softmax and dropout
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
 
-        # Concatenate heads and apply output linear layer
-        attention_output = attention_output.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)  # [batch_size, seq_len, d_model]
-        output = self.out(attention_output)  # [batch_size, seq_len, d_model]
+        # Apply attention to values
+        attn_output = torch.matmul(attn_weights, value)  # (batch_size, num_heads, seq_len, head_dim)
 
-        return output, attention_weights
+        # Concatenate heads and project output
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)  # (batch_size, seq_len, embed_dim)
+
+        return attn_output
+
+class TransformerBlock(nn.Module):
+    def __init__(self, d_model, num_heads, d_llm):
+        super().__init__()
+        self.attention = MultiHeadAttention(d_model, d_llm, num_heads)
+        self.ffn = FeedForward(d_model, d_model*2)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.output_proj = nn.Linear(d_model, d_llm)
+
+    def forward(self, x, mask=None):
+        attn_output = self.attention(x, x, x, mask)
+        x = x + attn_output
+        x = self.norm1(x)
+
+        ffn_output = self.ffn(x)
+        x = x + ffn_output
+        x = self.norm2(x)
+
+        x = self.output_proj(x)
+
+        return x
 
 class TransformerBlockWithMoE(nn.Module):
     def __init__(self, d_model, num_heads, d_llm, num_experts, top_k):
