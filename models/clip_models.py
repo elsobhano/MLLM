@@ -402,6 +402,7 @@ class FeatureExtracter(nn.Module):
         self.conv_1d = video_header(
             vid_head = "Transf",
             interaction = "DP",
+            temporal_layer=1,
             clip_state_dict=None,
             spe_cls_feature=400,)
         if frozen:
@@ -458,7 +459,7 @@ class ImageCLIP(nn.Module):
         # self.lm_head = make_head(inplanes, planes, head_type)
         
     def forward(self, src_input):
-        x, load_balancing_loss = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
+        x = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         attention_mask = src_input['attention_mask']
 
         B, N, C = x.shape
@@ -469,7 +470,7 @@ class ImageCLIP(nn.Module):
         outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
         output = outs['last_hidden_state']
         # output = self.lm_head(last_hidden_state[:, 0, :])
-        return output.mean(dim=1), load_balancing_loss
+        return output.mean(dim=1)
 
 class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
@@ -501,7 +502,7 @@ class SLRCLIP(nn.Module):
         return target_matrix
 
     def forward(self, src_input, tgt_input):
-        image_features, load_balancing_loss = self.model_images(src_input)
+        image_features = self.model_images(src_input)
         text_features = self.model_txt(tgt_input)
 
         # normalized features
@@ -520,7 +521,7 @@ class SLRCLIP(nn.Module):
             text_sim_matrix=text_sim_matrix,
             scale_off_diag=0.0
         )
-        return logits_per_image, logits_per_text, ground_truth, load_balancing_loss
+        return logits_per_image, logits_per_text, ground_truth 
 
 def config_decoder(config):
     from transformers import AutoConfig

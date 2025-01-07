@@ -126,14 +126,14 @@ class ResidualAttentionBlock(nn.Module):
         ]))
 
         self.ln_2 = LayerNorm(d_model)
-        self.attn_mask = attn_mask
 
-    def attention(self, x: torch.Tensor, attn_mask: torch.Tensor):
-        self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
-        return self.attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
+    def attention(self, x: torch.Tensor, mask: torch.Tensor):
+        padding_mask = 1 - mask if mask is not None else None
+        padding_mask = padding_mask.bool() if padding_mask is not None else None
+        return self.attn(x, x, x, need_weights=False, key_padding_mask=padding_mask)[0]
 
-    def forward(self, x: torch.Tensor, regularization: bool):
-        x = x + self.attention(self.ln_1(x))
+    def forward(self, x: torch.Tensor, mask: torch.Tensor, regularization: bool):
+        x = x + self.attention(self.ln_1(x), mask=mask)
         if regularization:
             x = x + self.mlp(self.ln_2(x), regularization)
         else:
@@ -150,18 +150,19 @@ class TemporalTransformer(nn.Module):
         self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, num_experts) for _ in range(layers)])
         self.grad_checkpointing = False
 
-    def forward(self, x: torch.Tensor, regularization: bool):
+    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor ,regularization: bool):
         for r in self.resblocks:
-            x = r(x, attn_mask , regularization)
+            x = r(x, attn_mask, regularization)
         return x
 
 
 class video_header(nn.Module):
-    def __init__(self, vid_head, interaction, clip_state_dict, temporal_layer=3, num_experts=4, spe_cls_feature=None):
+    def __init__(self, vid_head, interaction, clip_state_dict, temporal_layer=2, num_experts=4, spe_cls_feature=None):
         super().__init__()
         self.vid_header = vid_head
         self.interaction = interaction     
         self.mse_criterion = nn.MSELoss()
+        self.final_out_proj = nn.Linear(512, 1024)
         # if spe_cls_feature is None:
         #     # finetune on k400
         #     self.spe_cls_feature = nn.Parameter(torch.zeros(400,clip_state_dict["text_projection"].shape[1]), requires_grad=False)
@@ -205,7 +206,7 @@ class video_header(nn.Module):
         if isinstance(module, nn.Linear) and module.bias is not None:
             module.bias.data.zero_()
 
-    def agg_video_feat(self, x, gen_cls_feat = None, regularization: bool = False):
+    def agg_video_feat(self, x, mask: torch.Tensor ,gen_cls_feat = None, regularization: bool = False):
         b, t, c = x.size()
         x = x.contiguous()
         if self.vid_header == "None":
@@ -213,32 +214,7 @@ class video_header(nn.Module):
 
         elif self.vid_header == "Transf":
             # Temporal Feature Modulation
-            if gen_cls_feat is not None:
-                num_esti = 5
-                scale_param = 0.05
-
-                # spatial features from clip part
-                x_clip = x.mean(dim=1,keepdim=False) # [bs, dim]
-                x_clip = x_clip / x_clip.norm(dim=-1,keepdim=True)
-                bs,c_ = x_clip.size() 
-
-                # estimate gen_feat and spe_feat
-                gen_logits = x_clip @ gen_cls_feat.t() # [bs, gen_num_class]
-                spe_logits = x_clip @ self.spe_cls_feature.t() # [bs, spe_num_class]
-                
-                gen_values, gen_indices = gen_logits.topk(num_esti,-1,True,True) # values, indices: [bs, num_esti]
-                gen_feat_esti = torch.gather(input=gen_cls_feat.unsqueeze(0).expand(bs,-1,-1), dim=1, \
-                                        index = gen_indices.unsqueeze(-1).expand(-1,-1,c_)) # [bs, num_esti, dim]
-                spe_values, spe_indices = spe_logits.topk(num_esti,-1,True,True) # values, indices: [bs, num_esti]
-                spe_feat_esti = torch.gather(input=self.spe_cls_feature.unsqueeze(0).expand(bs,-1,-1), dim=1, \
-                                        index = spe_indices.unsqueeze(-1).expand(-1,-1,c_)) # [bs, num_esti, dim]
-
-                gen_spe_sim = torch.bmm(gen_feat_esti,spe_feat_esti.permute(0,2,1)) # [bs,num_esti, num_esti]
-                gen_spe_sim, indi = torch.max(gen_spe_sim,dim=-1)
-                gen_spe_sim=1/torch.exp((1-gen_spe_sim.mean(dim=-1))/scale_param)
-                gen_spe_sim=gen_spe_sim.unsqueeze(-1).unsqueeze(-1)
-            else:
-                gen_spe_sim=torch.ones(1,device=x.device)
+            gen_spe_sim=torch.ones(1,device=x.device)
 
             x_original = x
             seq_length = t
@@ -248,7 +224,7 @@ class video_header(nn.Module):
             x = x + frame_position_embeddings
 
             x = x.permute(1, 0, 2)  # NLD -> LND
-            x = self.transformer(x, regularization)
+            x = self.transformer(x, mask ,regularization)
             x = x.permute(1, 0, 2)  # LND -> NLD
             x = gen_spe_sim * x.type(x_original.dtype) + x_original
         else:
@@ -266,18 +242,21 @@ class video_header(nn.Module):
             raise NotImplementedError
         return logit
 
-    def forward(self, vid_emb):
-        # if self.training:
-        vid_emb_expert = self.agg_video_feat(vid_emb, regularization=False)
-        # logits = self.get_logits(vid_emb_expert, cls_emb)
+    def forward(self, vid_emb, mask):
+        if self.training:
+            vid_emb_expert = self.agg_video_feat(vid_emb, mask ,regularization=False)
+            vid_emb_expert = self.out_proj(vid_emb_expert)
+            # logits = self.get_logits(vid_emb_expert, cls_emb)
 
-        vid_emb_reg = self.agg_video_feat(vid_emb, regularization=True)
-        # logits_reg = self.get_logits(vid_emb_reg, cls_emb)
+            # vid_emb_reg = self.agg_video_feat(vid_emb, mask, regularization=True)
+            # logits_reg = self.get_logits(vid_emb_reg, cls_emb)
 
-        # mse_loss = self.mse_criterion(vid_emb_reg, vid_emb)
-        return vid_emb_expert, vid_emb_reg
-        # else:
-            # vid_emb = self.agg_video_feat(vid_emb, cls_emb, regularization=False)
+            # mse_loss = self.mse_criterion(vid_emb_reg, vid_emb)
+            return vid_emb_expert#, vid_emb_reg
+        else:
+            vid_emb = self.agg_video_feat(vid_emb, mask, regularization=False)
+            vid_emb = self.out_proj(vid_emb)
+            return vid_emb
             # logits = self.get_logits(vid_emb, cls_emb)
             # return logits
 
