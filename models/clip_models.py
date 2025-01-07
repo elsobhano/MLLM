@@ -35,28 +35,16 @@ class resnet(nn.Module):
         super(resnet, self).__init__()
         self.resnet = make_resnet(name='resnet18', resnet_path=resnet_path)
 
-    def forward(self, x, lengths):
+    def forward(self, x, d ,lengths):
         x = self.resnet(x)
         x_batch = []
         start = 0
         for length in lengths:
             end = start + length
-            x_batch.append(x[start:end])
+            x_batch.append(torch.cat([x[start:end], d[start:end]], dim=1))
             start = end
         x = pad_sequence(x_batch,padding_value=PAD_IDX,batch_first=True)
         return x
-    
-class MLPMapper(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super().__init__()
-        self.mapper = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),  # First linear layer
-            nn.ReLU(),                        # Non-linear activation
-            nn.Linear(hidden_dim, output_dim) # Second linear layer
-        )
-    
-    def forward(self, x):
-        return self.mapper(x)
 
 class TemporalConv(nn.Module):
     def __init__(self, input_size, hidden_size, conv_type=2):
@@ -84,62 +72,52 @@ class TemporalConv(nn.Module):
                 modules.append(nn.BatchNorm1d(self.hidden_size))
                 modules.append(nn.ReLU(inplace=True))
         self.temporal_conv = nn.Sequential(*modules)
-
-        self.mlp_mapper = MLPMapper(input_dim=self.hidden_size, hidden_dim=self.hidden_size, output_dim=self.hidden_size)
     
     def forward(self, x):
         x = self.temporal_conv(x.permute(0,2,1))
-        x = self.mlp_mapper(x.permute(0,2,1))
-        return x
+        return x.permute(0,2,1)
 
 def make_head(inplanes, planes, head_type):
     if head_type == 'linear':
         return nn.Linear(inplanes, planes, bias=False)
     else:
         return nn.Identity()
-
     
 class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False, resent_path=None):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet(resnet_path=resent_path) # InceptionI3d()
-        # self.conv_1d = TemporalConv(input_size=1024, hidden_size=1024, conv_type=2)
-        # self.desc_mapper = DescriptionMLPMapper(input_dim=512, hidden_dim=1024, output_dim=1024)
-
+        self.conv_1d = TemporalConv(input_size=1536, hidden_size=1024, conv_type=2)
+    # 1536
         if frozen:
             for param in self.conv_2d.parameters():
                 param.requires_grad = False
 
     def forward(self,
-                src: Tensor,
-                src_length_batch
+                image_batch,
+                desc_batch,
+                src_length_batch,
                 ):
-        src = self.conv_2d(src,src_length_batch)
-        # src = self.conv_1d(src)
-        # src = self.desc_mapper(src)
+        src = self.conv_2d(image_batch, desc_batch, src_length_batch)
+        src = self.conv_1d(src)
 
         return src
 
 class TextCLIP(nn.Module):
     def __init__(self, config=None, inplanes=1024, planes=1024, head_type='identy'):
         super(TextCLIP, self).__init__()
-
         self.model_txt = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder() 
-
-        self.lm_head = make_head(inplanes, planes, head_type)
 
     def forward(self, tgt_input):
         txt_logits = self.model_txt(input_ids=tgt_input['input_ids'], attention_mask=tgt_input['attention_mask'])[0]
-        output = txt_logits[torch.arange(txt_logits.shape[0]), tgt_input['input_ids'].argmax(dim=-1)]
-        return self.lm_head(output), txt_logits
+        txt_logits = txt_logits.mean(dim=1)
+        return txt_logits
 
 class ImageCLIP(nn.Module):
-    def __init__(self, config, inplanes=1024, planes=1024, head_type='linear') :
+    def __init__(self, config, inplanes=1024, planes=1024, head_type='linear'):
         super(ImageCLIP, self).__init__()
         self.config = config
         self.model =  FeatureExtracter(resent_path=config['model']['resnet'])
-        self.desc_mapper = MLPMapper(input_dim=512, hidden_dim=1024, output_dim=1024)
-        self.modality_adapter = TemporalConv(input_size=1536, hidden_size=1024, conv_type=2)
 
         trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
         lora_config = LoraConfig(
@@ -164,13 +142,10 @@ class ImageCLIP(nn.Module):
         self.lm_head = make_head(inplanes, planes, head_type)
         
     def forward(self, src_input):
-        visual_features = self.model(src_input['input_ids'], src_input['src_length_batch']) # [b, n, c]
-        predicted_desc = self.desc_mapper(visual_features)
+        x = self.model(src_input['input_ids'], src_input['desc_feats'], src_input['src_length_batch']) # [b, n, c]
         attention_mask = src_input['attention_mask']
-        x = torch.cat((visual_features, predicted_desc), dim=-1)
-        x = self.modality_adapter(x)
 
-        B, N, C = x.shape 
+        B, N, C = x.shape
         cls_token = self.cls_token.repeat(B, 1, 1)
         x = torch.cat((cls_token, x), dim=1)
         attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
@@ -178,7 +153,7 @@ class ImageCLIP(nn.Module):
         outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
         last_hidden_state = outs['last_hidden_state']
         output = self.lm_head(last_hidden_state[:, 0, :])
-        return output, predicted_desc
+        return output
 
 class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
@@ -191,13 +166,6 @@ class SLRCLIP(nn.Module):
         self.model_images = ImageCLIP(config, inplanes=embed_dim, planes=embed_dim)
         trainable_params_model_images = sum(p.numel() for p in self.model_images.parameters() if p.requires_grad)
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-
-    def get_model_txt(self):
-        return self.model_txt
-    
-    @property
-    def get_encoder_hidden_states(self):
-        return self.encoder_hidden_states
 
     def compute_text_similarities_static(self, text_features):
         # Clone text features and disable gradient tracking
@@ -217,8 +185,8 @@ class SLRCLIP(nn.Module):
         return target_matrix
 
     def forward(self, src_input, tgt_input):
-        image_features, predicted_desc = self.model_images(src_input)
-        text_features, self.encoder_hidden_states = self.model_txt(tgt_input)
+        image_features = self.model_images(src_input)
+        text_features = self.model_txt(tgt_input)
 
         # normalized features
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
@@ -237,7 +205,7 @@ class SLRCLIP(nn.Module):
             scale_off_diag=0.0,
         )
 
-        return logits_per_image, logits_per_text, ground_truth, predicted_desc
+        return logits_per_image, logits_per_text, ground_truth
 
 def config_decoder(config):
     from transformers import AutoConfig
@@ -286,8 +254,6 @@ class gloss_free_model(nn.Module):
         self.args = args
 
         self.backbone = FeatureExtracter(frozen=False, resent_path=self.config['model']['resnet'])
-        self.desc_mapper = MLPMapper(input_dim=512, hidden_dim=1024, output_dim=1024)
-        self.modality_adapter = TemporalConv(input_size=1536, hidden_size=1024, conv_type=2)
         # self.mbart = MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder'])
         self.mbart = config_decoder(config)
 
@@ -306,23 +272,22 @@ class gloss_free_model(nn.Module):
             if "lora" in name:
                 param.requires_grad = True
 
-        # if config['model']['sign_proj']:
-        #     self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=embed_dim, config = config)
-        #     self.embed_scale = math.sqrt(embed_dim) if config['training']['scale_embedding'] else 1.0
-        # else:
-        #     self.sign_emb = nn.Identity()
-        #     self.embed_scale = 1.0
+        if config['model']['sign_proj']:
+            self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=embed_dim, config = config)
+            self.embed_scale = math.sqrt(embed_dim) if config['training']['scale_embedding'] else 1.0
+        else:
+            self.sign_emb = nn.Identity()
+            self.embed_scale = 1.0
 
     def share_forward(self, src_input):
         
-        visual_features = self.backbone(src_input['input_ids'], src_input['src_length_batch'])
+        frames_feature = self.backbone(src_input['input_ids'], src_input['src_length_batch'])
         attention_mask = src_input['attention_mask']
-        predicted_desc = self.desc_mapper(visual_features)
-        
-        x = torch.cat((visual_features, predicted_desc), dim=-1)
-        x = self.modality_adapter(x)
-        
-        return x, attention_mask
+
+        inputs_embeds = self.sign_emb(frames_feature)
+        inputs_embeds = self.embed_scale * inputs_embeds
+
+        return inputs_embeds, attention_mask
 
     def forward(self,src_input, tgt_input):
         

@@ -170,7 +170,8 @@ class S2T_Dataset(Dataset):
             for vid in img_tmp]
         
         img_tmp = [padded_video[i][0:video_length[i],:] for i in range(len(padded_video))]
-        img_batch = pad_sequence(img_tmp,padding_value=PAD_IDX,batch_first=True)
+        # img_batch = pad_sequence(img_tmp,padding_value=PAD_IDX,batch_first=True)
+        img_batch = torch.cat(img_tmp,0)
 
         return img_batch
     
