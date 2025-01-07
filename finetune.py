@@ -23,7 +23,7 @@ def get_args_parser():
     
     parser.add_argument('--epochs', default=10, type=int, metavar='N', help='number of total epochs to run')
     parser.add_argument('--num_gpus', default=1, type=int, metavar='N', help='number of gpus per node')
-    parser.add_argument('--eval_freq', default=1, type=int, metavar='N', 
+    parser.add_argument('--eval_freq', default=2, type=int, metavar='N', 
                         help='The frequency of metric evaluation, e.g Bleu score')
     ##################Transformer and Encoder Params####################################   
     parser.add_argument('--tokenizer_path', type=str, default="pretrain_models/MBart_trimmed",

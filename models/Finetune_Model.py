@@ -34,33 +34,33 @@ class FineTuneModel(pl.LightningModule):
         self.args = args
         ################Set the Sign Encoder####################
         self.model = gloss_free_model(self.config, self.args)
-        for k, v in self.model.named_parameters():
-            print(k)
+        # for k, v in self.model.named_parameters():
+        #     print(k)
         print('***********************************')
         print('Load parameters from Pretrained...')
         print('***********************************')
-        # state_dict = torch.load(args.model_ckpt, map_location='cpu')['state_dict']
-        # new_state_dict = OrderedDict()
-        # for k, v in state_dict.items():
-        #     # k = '.'.join(k.split('.')[1:])
-        #     # new_state_dict[k] = v
-        #     if 'conv_2d' in k or 'conv_1d' in k:
-        #         k = 'backbone.'+'.'.join(k.split('.')[3:])
-        #         new_state_dict[k] = v
-        #     if 'trans_encoder' in k:
-        #         k = 'mbart.base_model.model.model.encoder.'+'.'.join(k.split('.')[5:])
-        #         new_state_dict[k] = v
+        state_dict = torch.load(args.model_ckpt, map_location='cpu')['state_dict']
+        new_state_dict = OrderedDict()
+        for k, v in state_dict.items():
+            # k = '.'.join(k.split('.')[1:])
+            # new_state_dict[k] = v
+            if 'conv_2d' in k or 'conv_1d' in k:
+                k = 'backbone.'+'.'.join(k.split('.')[3:])
+                new_state_dict[k] = v
+            if 'trans_encoder' in k:
+                k = 'mbart.base_model.model.model.encoder.'+'.'.join(k.split('.')[5:])
+                new_state_dict[k] = v
 
-        # ret = self.model.load_state_dict(new_state_dict, strict=False)
-        # print('Missing keys: \n', '\n'.join(ret.missing_keys))
-        # print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
-        # for name, param in self.model.named_parameters():
-        #     if "backbone" in name or "mbart.base_model.model.model.encoder" in name:
-        #         param.requires_grad = False
-        #         print(f"Froze layer: {name}")
-        # for name, param in self.model.named_parameters():
-        #     if param.requires_grad:
-        #         print(f"Unfroze layer: {name}")
+        ret = self.model.load_state_dict(new_state_dict, strict=False)
+        print('Missing keys: \n', '\n'.join(ret.missing_keys))
+        print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
+        for name, param in self.model.named_parameters():
+            if "backbone" in name or "mbart.base_model.model.model.encoder" in name:
+                param.requires_grad = False
+                print(f"Froze layer: {name}")
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                print(f"Unfroze layer: {name}")
         #################Initialize the tokenizer####################
         self.tokenizer = MBartTokenizer.from_pretrained(self.config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
         lang_code_to_id = self.tokenizer.lang_code_to_id['de_DE']
