@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import MBartForConditionalGeneration
 from peft import get_peft_model, LoraConfig, TaskType
+from models.video_clip import video_header
 import numpy as np
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
@@ -397,8 +398,12 @@ class FeatureExtracter(nn.Module):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet(resnet_path=resent_path) # InceptionI3d()
         # self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=300)
-        self.conv_1d = TransformerBlockWithMoE(d_model=512, num_heads=8, d_llm=1024, num_experts=4, top_k=2)
-
+        # self.conv_1d = TransformerBlockWithMoE(d_model=512, num_heads=8, d_llm=1024, num_experts=4, top_k=2)
+        self.conv_1d = video_header(
+            vid_head = "Transf",
+            interaction = "DP",
+            clip_state_dict=None,
+            spe_cls_feature=400,)
         if frozen:
             for param in self.conv_2d.parameters():
                 param.requires_grad = False
@@ -410,9 +415,9 @@ class FeatureExtracter(nn.Module):
                 ):
         # src shape: (all_frames_in_batch, 3, 224, 224)
         src = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
-        src, load_balancing_loss = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=1024)
+        src = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=1024)
 
-        return src, load_balancing_loss
+        return src 
 
 class TextCLIP(nn.Module):
     def __init__(self, config=None, inplanes=1024, planes=1024, head_type='identy'):
