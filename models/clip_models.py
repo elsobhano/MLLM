@@ -281,7 +281,7 @@ class gloss_free_model(nn.Module):
 
     def share_forward(self, src_input):
         
-        frames_feature = self.backbone(src_input['input_ids'], src_input['src_length_batch'])
+        frames_feature = self.backbone(src_input['input_ids'], src_input['desc_feats'] ,src_input['src_length_batch'])
         attention_mask = src_input['attention_mask']
 
         inputs_embeds = self.sign_emb(frames_feature)

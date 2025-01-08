@@ -48,12 +48,12 @@ class FineTuneModel(pl.LightningModule):
             if 'trans_encoder' in k:
                 k = 'mbart.base_model.model.model.encoder.'+'.'.join(k.split('.')[5:])
                 new_state_dict[k] = v
-            if 'modality_adapter' in k:
-                k = '.'.join(k.split('.')[2:])
-                new_state_dict[k] = v
-            if 'desc_mapper' in k:
-                k = '.'.join(k.split('.')[2:])
-                new_state_dict[k] = v
+            # if 'modality_adapter' in k:
+            #     k = '.'.join(k.split('.')[2:])
+            #     new_state_dict[k] = v
+            # if 'desc_mapper' in k:
+            #     k = '.'.join(k.split('.')[2:])
+            #     new_state_dict[k] = v
 
         ret = self.model.load_state_dict(new_state_dict, strict=False)
         print('Missing keys: \n', '\n'.join(ret.missing_keys))
