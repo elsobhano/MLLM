@@ -184,8 +184,8 @@ class DataModule(pl.LightningDataModule):
             
             self.train_dataset = S2T_Dataset(path=self.text_train, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='train')
 
-            self.val_dataset = S2T_Dataset(path=self.text_val, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='dev')
-            # self.val_dataset = self.train_dataset
+            # self.val_dataset = S2T_Dataset(path=self.text_val, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='dev')
+            self.val_dataset = self.train_dataset
         if stage == 'test' or stage is None:
             # test dataset
             self.test_dataset = S2T_Dataset(path=self.text_test, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='test')

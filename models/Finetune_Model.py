@@ -34,8 +34,8 @@ class FineTuneModel(pl.LightningModule):
         self.args = args
         ################Set the Sign Encoder####################
         self.model = gloss_free_model(self.config, self.args)
-        for k, v in self.model.named_parameters():
-            print(k)
+        # for k, v in self.model.named_parameters():
+        #     print(k)
         print('***********************************')
         print('Load parameters from Pretrained...')
         print('***********************************')

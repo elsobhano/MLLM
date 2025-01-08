@@ -45,7 +45,7 @@ class resnet(nn.Module):
             start = end
         x = pad_sequence(x_batch, padding_value=PAD_IDX, batch_first=True)
         return x
-
+'''
 class TemporalConv(nn.Module):
     def __init__(self, input_size, hidden_size, conv_type=2):
         super(TemporalConv, self).__init__()
@@ -392,7 +392,7 @@ def make_head(inplanes, planes, head_type):
         return nn.Linear(inplanes, planes, bias=False)
     else:
         return nn.Identity()
-    
+'''
 class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False, resent_path=None):
         super(FeatureExtracter, self).__init__()

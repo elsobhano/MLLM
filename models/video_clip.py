@@ -245,7 +245,7 @@ class video_header(nn.Module):
     def forward(self, vid_emb, mask):
         if self.training:
             vid_emb_expert = self.agg_video_feat(vid_emb, mask ,regularization=False)
-            vid_emb_expert = self.out_proj(vid_emb_expert)
+            vid_emb_expert = self.final_out_proj(vid_emb_expert)
             # logits = self.get_logits(vid_emb_expert, cls_emb)
 
             # vid_emb_reg = self.agg_video_feat(vid_emb, mask, regularization=True)
@@ -255,7 +255,7 @@ class video_header(nn.Module):
             return vid_emb_expert#, vid_emb_reg
         else:
             vid_emb = self.agg_video_feat(vid_emb, mask, regularization=False)
-            vid_emb = self.out_proj(vid_emb)
+            vid_emb = self.final_out_proj(vid_emb)
             return vid_emb
             # logits = self.get_logits(vid_emb, cls_emb)
             # return logits
