@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import MBartForConditionalGeneration
 from peft import get_peft_model, LoraConfig, TaskType
+from models.utils import local_1d_pattern
 import numpy as np
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
@@ -131,182 +132,13 @@ class FeedForward(nn.Module):
     def forward(self, x):
         return self.linear2(self.dropout(self.activation(self.linear1(x))))
 
-class MoE(nn.Module):
-    def __init__(self, d_model, num_experts, top_k):
-        super().__init__()
-        self.num_experts = num_experts
-        self.top_k = top_k
-        self.experts = nn.ModuleList([FeedForward(d_model, d_model*2) for _ in range(num_experts)])
-        self.gate = nn.Linear(d_model, num_experts)
-
-    def forward(self, x):
-        # Gating mechanism
-        gate_logits = self.gate(x)  # [batch_size, seq_len, num_experts]
-        gate_probs = torch.softmax(gate_logits, dim=-1)
-        top_k_gate_probs, top_k_indices = torch.topk(gate_probs, self.top_k, dim=-1)
-
-        # Sparse combination of experts
-        output = torch.zeros_like(x)
-        for i in range(self.top_k):
-            expert_mask = top_k_indices == i
-            expert_output = self.experts[i](x)
-            output += expert_mask.float() * expert_output * top_k_gate_probs[..., i:i+1]
-
-        return output
-
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, num_heads):
+    def __init__(self, d_model, num_heads, dropout=0.1, max_seq_len=300, windfow_size=7):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
-
-        assert self.head_dim * num_heads == d_model, "d_model must be divisible by num_heads"
-
-        # Linear layers for Q, K, V
-        self.query = nn.Linear(d_model, d_model)
-        self.key = nn.Linear(d_model, d_model)
-        self.value = nn.Linear(d_model, d_model)
-        self.rope = RotaryPositionalEmbedding(self.head_dim, max_seq_len=500)
-
-        # Output linear layer
-        self.out = nn.Linear(d_model, d_model)
-
-    def forward(self, query, key, value, mask=None):
-        batch_size, seq_len, _ = query.shape
-
-        # Linear projections for Q, K, V
-        Q = self.query(query)  # [batch_size, seq_len, d_model]
-        K = self.key(key)      # [batch_size, seq_len, d_model]
-        V = self.value(value)  # [batch_size, seq_len, d_model]
-
-        # Reshape Q, K, V for multi-head attention
-        Q = Q.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
-        K = K.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
-        V = V.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
-
-        # Apply RoPE
-        Q, K = self.rope(Q, K, seq_len)
-        
-        # Scaled dot-product attention
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))  # [batch_size, num_heads, seq_len, seq_len]
-        if mask is not None:
-            scores = scores.masked_fill(mask == 0, float('-inf'))
-        attention_weights = F.softmax(scores, dim=-1)  # [batch_size, num_heads, seq_len, seq_len]
-
-        # Apply attention to V
-        attention_output = torch.matmul(attention_weights, V)  # [batch_size, num_heads, seq_len, head_dim]
-
-        # Concatenate heads and apply output linear layer
-        attention_output = attention_output.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)  # [batch_size, seq_len, d_model]
-        output = self.out(attention_output)  # [batch_size, seq_len, d_model]
-
-        return output, attention_weights
-
-class LightweightTemporalTransformer(nn.Module):
-    def __init__(self, input_dim, hidden_dim=32, num_heads=2, dropout=0.1, max_seq_len=1000):
-        super().__init__()
-        assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
-        
-        self.hidden_dim = hidden_dim
-        self.num_heads = num_heads
-        self.head_dim = hidden_dim // num_heads
-        
-        # Input projection
-        self.input_projection = nn.Linear(input_dim, hidden_dim)
-        
-        # Transformer components
-        self.norm1 = nn.LayerNorm(hidden_dim)
-        self.norm2 = nn.LayerNorm(hidden_dim)
-        
-        # QKV projections
-        self.q_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.k_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.v_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.o_proj = nn.Linear(hidden_dim, hidden_dim)
-        
-        # RoPE
-        self.rope = RotaryPositionalEmbedding(self.head_dim, max_seq_len)
-        
-        # FFN
-        # self.ffn = nn.Sequential(
-        #     nn.Linear(hidden_dim, hidden_dim * 2),
-        #     nn.GELU(),
-        #     nn.Dropout(dropout),
-        #     nn.Linear(hidden_dim * 2, hidden_dim)
-        # )
-        self.moe = MoE(hidden_dim, num_experts=4, top_k=2)
-        self.dropout = nn.Dropout(dropout)
-        self.scale = self.head_dim ** -0.5
-        
-    def forward(self, x, mask=None):
-        batch_size, seq_len, _ = x.shape
-        
-        # Project input
-        x = self.input_projection(x)
-        
-        # Attention block
-        residual = x
-        x = self.norm1(x)
-        
-        # QKV projections
-        q = self.q_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim)
-        k = self.k_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim)
-        v = self.v_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim)
-        
-        # Transpose for attention
-        q = q.transpose(1, 2)  # (batch, heads, seq_len, head_dim)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
-        
-        # Apply RoPE to queries and keys
-        q_rope, k_rope = self.rope(q, k, seq_len)
-        
-        # Compute attention
-        attn = torch.matmul(q_rope, k_rope.transpose(-2, -1)) * self.scale
-        
-        # mask shape: [batch_size, seq_len] -> [batch_size, 1, 1, seq_len]
-        mask = mask.unsqueeze(1).unsqueeze(-1)
-        broadcasted_mask = mask.expand(-1, self.num_heads, -1, seq_len)
-        # # The mask will broadcast from [batch_size, 1, 1, seq_len] to [batch_size, num_heads, seq_len, seq_len]
-        attn = attn.masked_fill(broadcasted_mask == 0, float('-1e4'))
-        valid_positions = broadcasted_mask.sum(dim=-1, keepdim=True)  # Count valid positions
-        all_masked = valid_positions == 0
-        if all_masked.any():
-                # Create uniform attention for rows where all positions are masked
-                uniform_attention = torch.zeros_like(attn)
-                uniform_attention = uniform_attention.masked_fill(broadcasted_mask.bool(), 1.0)
-                uniform_attention = uniform_attention / (valid_positions.clamp(min=1))
-                attn = torch.where(all_masked, uniform_attention, attn)
-        # attn = attn.to(torch.float32)
-        # attn = torch.where(torch.isnan(attn), torch.full_like(attn, float('-1e3')), attn)
-        # attn = attn.to(torch.float16)
-        # Apply softmax
-        attn = torch.softmax(attn, dim=-1)
-        attn = self.dropout(attn)
-        
-        # Apply attention to values
-        out = torch.matmul(attn, v)
-        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_dim)
-        out = self.o_proj(out)
-        
-        x = residual + self.dropout(out)
-        
-        # FFN block
-        residual = x
-        x = self.norm2(x)
-        # x = self.ffn(x)
-        moe_output = self.moe(x)
-        x = residual + x
-        
-        return x
-
-class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, num_heads, dropout=0.1, max_seq_len=300):
-        super().__init__()
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.head_dim = d_model // num_heads
+        self.window_size = windfow_size
 
         assert self.head_dim * num_heads == d_model, "d_model must be divisible by num_heads"
 
@@ -346,13 +178,24 @@ class MultiHeadAttention(nn.Module):
         # Scaled dot-product attention
         scores = torch.matmul(query, key.transpose(-2, -1)) / (self.head_dim ** 0.5)  # (batch_size, num_heads, seq_len, seq_len)
 
+        local_mask = local_1d_pattern(seq_len, self.window_size).to(scores.device)
+        local_mask = local_mask.unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, seq_len, seq_len)
+        # local_mask = torch.ones_like(local_mask)
+
         # Apply mask (if provided)
         if mask is not None:
             # Reshape mask to (batch_size, 1, 1, seq_len) for broadcasting
             mask = mask.unsqueeze(1).unsqueeze(1)  # (batch_size, 1, 1, seq_len)
+            combined_mask = local_mask * mask
             # Apply mask to scores
-            scores = scores.masked_fill(mask == 0, float('-inf'))  # Replace masked positions with -inf
-
+        else:
+            combined_mask = local_mask
+        # Ensure each token attends to itself
+        diag_mask = torch.eye(seq_len, dtype=torch.bool, device=scores.device).unsqueeze(0).unsqueeze(0)
+        combined_mask = combined_mask | diag_mask
+        
+        scores = scores.masked_fill(combined_mask == 0, float('-inf'))  # Replace masked positions with -inf
+        
         # Softmax and dropout
         attn_weights = F.softmax(scores, dim=-1)
         attn_weights = self.dropout(attn_weights)

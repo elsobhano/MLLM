@@ -149,3 +149,35 @@ class SaveBestModelOnNEpochs(Callback):
 
                 # Update the last best checkpoint path
                 self.last_best_checkpoint_path = new_checkpoint_path
+
+def local_1d_pattern(seq_len: int, window_size: int) -> torch.Tensor:
+    """
+    Generates a strictly centered local attention mask for a 1D sequence.
+    
+    Args:
+        seq_len (int): Length of the sequence.
+        window_size (int): Size of the attention window. Must be odd.
+        
+    Returns:
+        mask (torch.Tensor): Binary mask of shape (seq_len, seq_len).
+    """
+    # Ensure window_size is odd
+    if window_size % 2 == 0:
+        raise ValueError("window_size must be odd.")
+    
+    # Create a mask of zeros
+    mask = torch.zeros(seq_len, seq_len, dtype=torch.bool)
+    
+    # Calculate half-window size
+    half_window = window_size // 2
+    
+    # Fill the mask with 1s within the centered window
+    for i in range(seq_len):
+        # Calculate the start and end of the window
+        start = max(0, i - half_window)
+        end = min(seq_len, i + half_window + 1)
+        
+        # Set the window to 1
+        mask[i, start:end] = 1
+    
+    return mask
