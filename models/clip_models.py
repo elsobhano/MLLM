@@ -5,6 +5,7 @@ from transformers import MBartForConditionalGeneration
 from models.spatial_models.frame_models.dino_adaptor_model import Model
 from timm.models.layers import DropPath
 from peft import get_peft_model, LoraConfig, TaskType
+from torch.nn.init import constant_
 from models.utils import local_1d_pattern
 import numpy as np
 from torch import Tensor
@@ -159,7 +160,8 @@ class MultiHeadAttention(nn.Module):
         self.key_proj = nn.Linear(d_model, d_model)
         self.value_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
-
+        if isinstance(self.out_proj, nn.Linear) and self.out_proj.bias is not None:
+            constant_(self.out_proj.bias, 0.0)
         # Rotary positional embeddings
         self.rotary_emb = RotaryPositionalEmbedding(self.head_dim, max_seq_len)
 
@@ -293,6 +295,7 @@ class Transformer(nn.Module):
         super().__init__()
         self.pos_embedding = SinusoidalPositionalEmbedding(d_model, max_seq_len=300)
         self.layers = nn.ModuleList()
+        self.num_layers = sum(layers)
         for index, num_blocks in enumerate(layers):
             for block_idx in range(num_blocks):
                 # Calculate drop path rate for this block
@@ -303,6 +306,33 @@ class Transformer(nn.Module):
                 self.layers.append(Downsampler())
 
         self.output_proj = nn.Linear(d_model, d_llm)
+        self.inits = 'standard'
+        self.apply(self._init_weights)
+    def _init_weights(self, module):
+        """Initialize the weights."""
+        if isinstance(module, (nn.Linear)):
+            if self.inits == 'standard':
+                module.weight.data.normal_(mean=0.0, std=0.02)
+            elif self.inits =='xavier':
+                torch.nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+
+        for name, p in module.named_parameters():
+            if "attention.out_proj" in name:
+                # Special Scaled Initialization --> There are 2 Layer Norms per Transformer Block
+                if self.inits == 'standard':
+                    p.data.normal_(
+                        mean=0.0,
+                        std=(0.02 / math.sqrt(2 * self.num_layers)),
+                    )
     def forward(self, x, mask=None):
         x = self.pos_embedding(x)
         for layer in self.layers:
