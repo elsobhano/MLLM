@@ -30,13 +30,13 @@ class Model(nn.Module):
         self.lin = torch.nn.Linear(num_features, out_dim)
         self.bn = torch.nn.BatchNorm1d(out_dim)
 
-        tmp_path = '/tmp/tmp.pth'
-        if not os.path.isfile(tmp_path):
-            r = requests.get(ckpt_dir)
-            open(tmp_path, "wb").write(r.content)
+        # tmp_path = '/tmp/tmp.pth'
+        # if not os.path.isfile(tmp_path):
+        #     r = requests.get(ckpt_dir)
+        #     open(tmp_path, "wb").write(r.content)
 
         dict_additional = self.spatial_model.load_state_dict(
-            torch.load(tmp_path, map_location="cpu"), strict=False
+            torch.load(ckpt_dir, map_location="cpu"), strict=False
         )
 
         for name, param in self.spatial_model.named_parameters():
@@ -61,10 +61,10 @@ class Model(nn.Module):
             ]
         )
 
-    def forward(self, list_of_frames, max_len=1024):
-        lengths = torch.tensor([len(x_i) for x_i in list_of_frames])
+    def forward(self, seq_of_frames, lengths, max_len=None):
+        # lengths = torch.tensor([len(x_i) for x_i in list_of_frames])
 
-        y = self.spatial_model.forward_features(torch.cat(list_of_frames, dim=0))[
+        y = self.spatial_model.forward_features(seq_of_frames)[
             "x_norm_clstoken"
         ]
         list_of_original_features = y

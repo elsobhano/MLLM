@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import MBartForConditionalGeneration
+from models.spatial_models.frame_models.dino_adaptor_model import Model
+from timm.models.layers import DropPath
 from peft import get_peft_model, LoraConfig, TaskType
 from models.utils import local_1d_pattern
 import numpy as np
@@ -30,21 +32,29 @@ def make_resnet(name='resnet18', resnet_path=None):
     model.fc = nn.Identity()
     return model
 
-class resnet(nn.Module):
-    def __init__(self, resnet_path):
-        super(resnet, self).__init__()
-        self.resnet = make_resnet(name='resnet18', resnet_path=resnet_path)
+class dino(nn.Module):
+    def __init__(self, dino_path):
+        super().__init__()
+        # self.resnet = make_resnet(name='resnet18', resnet_path=resnet_path)
+        dino_params = {
+            "ckpt_dir": dino_path,
+            "trainable_names": [],
+            "adaptor_layers": list(np.arange(9, 12, 1)),
+            "adapt_params": {
+                "w_lora": True,
+                "w_lora_ff": True,
+                "lora_rank": 4,
+                "lora_drop": 0.1,
+                "lora_a": 4.0,
+                "rng_init": False,
+            },
+            "out_dim": 512,
+        }
+        self.dino = Model(**dino_params)
 
     def forward(self, x, lengths):
-        x = self.resnet(x)
-        x_batch = []
-        start = 0
-        for length in lengths:
-            end = start + length
-            x_batch.append(x[start:end])
-            start = end
-        x = pad_sequence(x_batch, padding_value=PAD_IDX, batch_first=True)
-        return x
+        y, mask, _ = self.dino(x, lengths)
+        return y, mask
 
 class TemporalConv(nn.Module):
     def __init__(self, input_size, hidden_size, conv_type=2):
@@ -66,7 +76,7 @@ class TemporalConv(nn.Module):
             if ks[0] == 'P':
                 modules.append(nn.MaxPool1d(kernel_size=int(ks[1]), ceil_mode=False))
             elif ks[0] == 'K':
-                modules.append(
+                modules.adinoppend(
                     nn.Conv1d(input_sz, self.hidden_size, kernel_size=int(ks[1]), stride=1, padding=0)
                 )
                 modules.append(nn.BatchNorm1d(self.hidden_size))
@@ -133,7 +143,9 @@ class FeedForward(nn.Module):
         return self.linear2(self.dropout(self.activation(self.linear1(x))))
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, num_heads, dropout=0.1, max_seq_len=300, windfow_size=7):
+    def __init__(self, d_model, num_heads, dropout=0.1, max_seq_len=300, windfow_size=7,
+                use_layer_scale=True, layer_scale_init_value=1e-5,
+                ):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
@@ -146,12 +158,17 @@ class MultiHeadAttention(nn.Module):
         self.query_proj = nn.Linear(d_model, d_model)
         self.key_proj = nn.Linear(d_model, d_model)
         self.value_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
 
         # Rotary positional embeddings
         self.rotary_emb = RotaryPositionalEmbedding(self.head_dim, max_seq_len)
 
         # Dropout
         self.dropout = nn.Dropout(dropout)
+
+        self.use_layer_scale = use_layer_scale
+        if self.use_layer_scale:
+            self.layer_scale = nn.Parameter(layer_scale_init_value * torch.ones(d_model), requires_grad=True)
 
 
     def forward(self, query, key, value, mask=None):
@@ -198,37 +215,100 @@ class MultiHeadAttention(nn.Module):
         
         # Softmax and dropout
         attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
 
         # Apply attention to values
-        attn_output = torch.matmul(attn_weights, value)  # (batch_size, num_heads, seq_len, head_dim)
+        out = torch.matmul(attn_weights, value)  # (batch_size, num_heads, seq_len, head_dim)
 
         # Concatenate heads and project output
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)  # (batch_size, seq_len, embed_dim)
+        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)  # (batch_size, seq_len, embed_dim)
 
-        return attn_output
+        # Final linear projection
+        out = self.dropout(self.out_proj(out))
+
+        # Apply layer scaling if enabled
+        if self.use_layer_scale:
+            out = out * self.layer_scale
+
+        return out
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model, num_heads, d_llm):
+    def __init__(self, d_model, num_heads, drop_path_rate):
         super().__init__()
-        self.attention = MultiHeadAttention(d_model=d_model, num_heads=num_heads)
-        self.ffn = FeedForward(d_model, d_model*2)
+        self.attention = MultiHeadAttention(d_model=d_model, num_heads=num_heads, dropout=0.1)
+        self.ffn = FeedForward(d_model, d_model*4)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
-        self.output_proj = nn.Linear(d_model, d_llm)
+        # Drop Path (Stochastic Depth)
+        self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0.0 else nn.Identity()
 
     def forward(self, x, mask=None):
         attn_output = self.attention(x, x, x, mask)
-        x = x + attn_output
+        x = x + self.drop_path(attn_output)
         x = self.norm1(x)
 
         ffn_output = self.ffn(x)
-        x = x + ffn_output
+        x = x + self.drop_path(ffn_output)
         x = self.norm2(x)
 
-        x = self.output_proj(x)
+        # x = self.output_proj(x)
 
-        return x
+        return x, mask
+
+class Downsampler(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+    def forward(self, x, mask):
+        x = torch.nn.functional.avg_pool1d(
+            x.permute(0, 2, 1), 3, stride=2, padding=1
+        ).permute(0, 2, 1)
+        with torch.no_grad():
+            mask = torch.nn.functional.avg_pool1d(
+                mask.float(), 3, stride=2, padding=1, count_include_pad=False
+            )
+            # Ensure that there is atleast something on the encoder side.
+            mask[:, 0] = 1.0
+        return (x, (mask > 0.0).bool())
+
+class SinusoidalPositionalEmbedding(nn.Module):
+    def __init__(self, d_model, max_seq_len):
+        super().__init__()
+        self.d_model = d_model
+
+        # Create positional encodings
+        position = torch.arange(max_seq_len).unsqueeze(1)  # (max_seq_len, 1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-torch.log(torch.tensor(10000.0)) / d_model))  # (d_model // 2,)
+        pe = torch.zeros(max_seq_len, d_model)  # (max_seq_len, d_model)
+        pe[:, 0::2] = torch.sin(position * div_term)  # Even indices
+        pe[:, 1::2] = torch.cos(position * div_term)  # Odd indices
+        self.register_buffer('pe', pe)  # Register as a buffer (not a parameter)
+
+    def forward(self, x):
+        # x: (batch_size, seq_len, d_model)
+        seq_len = x.size(1)
+        return x + self.pe[:seq_len, :]  # Add positional embeddings to the input
+    
+class Transformer(nn.Module):
+    def __init__(self, d_model, num_heads, layers, drop_path_rate=0.1, d_llm=1024):
+        super().__init__()
+        self.pos_embedding = SinusoidalPositionalEmbedding(d_model, max_seq_len=300)
+        self.layers = nn.ModuleList()
+        for index, num_blocks in enumerate(layers):
+            for block_idx in range(num_blocks):
+                # Calculate drop path rate for this block
+                block_dpr = drop_path_rate * (block_idx + sum(layers[:index])) / (sum(layers) - 1)
+                # Add a transformer block with the calculated drop path rate
+                self.layers.append(TransformerBlock(d_model, num_heads, block_dpr))
+            if index != len(layers) - 1:
+                self.layers.append(Downsampler())
+
+        self.output_proj = nn.Linear(d_model, d_llm)
+    def forward(self, x, mask=None):
+        x = self.pos_embedding(x)
+        for layer in self.layers:
+            x, mask = layer(x, mask)
+        x = self.output_proj(x)
+        return x, mask
 
 def make_head(inplanes, planes, head_type):
     if head_type == 'linear':
@@ -237,11 +317,12 @@ def make_head(inplanes, planes, head_type):
         return nn.Identity()
     
 class FeatureExtracter(nn.Module):
-    def __init__(self, frozen=False, resent_path=None):
+    def __init__(self, frozen=False, dino_path=None):
         super(FeatureExtracter, self).__init__()
-        self.conv_2d = resnet(resnet_path=resent_path) # InceptionI3d()
+        self.conv_2d = dino(dino_path) # InceptionI3d()
         # self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=300)
-        self.conv_1d = TransformerBlock(d_model=512, num_heads=8, d_llm=1024)
+        # self.conv_1d = TwoLayerTransformerBlock(d_model=512, num_heads=8, d_llm=1024)
+        self.conv_1d = Transformer(d_model=512, num_heads=8, layers=[2,2])
 
         if frozen:
             for param in self.conv_2d.parameters():
@@ -253,10 +334,10 @@ class FeatureExtracter(nn.Module):
                 mask,
                 ):
         # src shape: (all_frames_in_batch, 3, 224, 224)
-        src = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
-        src = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=1024)
+        src, mask = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
+        src, mask = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=1024)
 
-        return src
+        return src, mask
 
 class TextCLIP(nn.Module):
     def __init__(self, config=None, inplanes=1024, planes=1024, head_type='identy'):
@@ -272,7 +353,7 @@ class ImageCLIP(nn.Module):
     def __init__(self, config, inplanes=1024, planes=1024, head_type='linear') :
         super(ImageCLIP, self).__init__()
         self.config = config
-        self.model =  FeatureExtracter(resent_path=config['model']['resnet'])
+        self.model =  FeatureExtracter(dino_path=config['model']['dino'])
 
         trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
         lora_config = LoraConfig(
@@ -295,8 +376,8 @@ class ImageCLIP(nn.Module):
         self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
 
     def forward(self, src_input):
-        x = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
-        attention_mask = src_input['attention_mask']
+        x, attention_mask = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
+        # attention_mask = src_input['attention_mask']
 
         B, N, C = x.shape
         cls_token = self.cls_token.repeat(B, 1, 1)
@@ -405,7 +486,7 @@ class gloss_free_model(nn.Module):
         self.config = config
         self.args = args
 
-        self.backbone = FeatureExtracter(frozen=False, resent_path=self.config['model']['resnet'])
+        self.backbone = FeatureExtracter(frozen=False, dino_path=self.config['model']['dino'])
         # self.mbart = MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder'])
         self.mbart = config_decoder(config)
 
@@ -433,8 +514,8 @@ class gloss_free_model(nn.Module):
 
     def share_forward(self, src_input):
         
-        frames_feature = self.backbone(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask'])
-        attention_mask = src_input['attention_mask']
+        frames_feature, attention_mask = self.backbone(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask'])
+        # attention_mask = src_input['attention_mask']
 
         inputs_embeds = self.sign_emb(frames_feature)
         inputs_embeds = self.embed_scale * inputs_embeds
