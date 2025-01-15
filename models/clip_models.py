@@ -403,6 +403,7 @@ class FeatureExtracter(nn.Module):
             vid_head = "Transf",
             interaction = "DP",
             temporal_layer=1,
+            num_experts=4,
             clip_state_dict=None,
             spe_cls_feature=400,)
         if frozen:
