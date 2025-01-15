@@ -38,7 +38,7 @@ def get_args_parser():
     parser.add_argument('--data_config', type=str, default='configs/config.yaml',
                         help='Path to the data config file.')  
     parser.add_argument('--num_workers', type=int, default=10, help='Number of workers.')
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
+    parser.add_argument('--batch_size', type=int, default=2, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
     
     parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
@@ -159,7 +159,7 @@ def main(args):
                 data_ver=args.data_ver)
 
     trainer = pl.Trainer(
-        strategy="ddp",
+        strategy="ddp_find_unused_parameters_true",
         sync_batchnorm=True,
         logger=logger,
         num_sanity_val_steps=0,
