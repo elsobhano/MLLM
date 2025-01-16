@@ -9,6 +9,7 @@ from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 import torchvision
 import math
+from models.video_clip import MoTE
 PAD_IDX = 1
 
 def make_resnet(name='resnet18', resnet_path=None):
@@ -45,7 +46,7 @@ class resnet(nn.Module):
             start = end
         x = pad_sequence(x_batch, padding_value=PAD_IDX, batch_first=True)
         return x
-'''
+
 class TemporalConv(nn.Module):
     def __init__(self, input_size, hidden_size, conv_type=2):
         super(TemporalConv, self).__init__()
@@ -76,7 +77,7 @@ class TemporalConv(nn.Module):
     def forward(self, x):
         x = self.temporal_conv(x.permute(0,2,1))
         return x.permute(0,2,1)
-
+'''
 class RotaryPositionalEmbedding(nn.Module):
     def __init__(self, dim, max_seq_len=1000):
         super().__init__()
@@ -397,15 +398,16 @@ class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False, resent_path=None):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = resnet(resnet_path=resent_path) # InceptionI3d()
+        self.conv_1d = TemporalConv(input_size=512, hidden_size=1024, conv_type=2)
         # self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=300)
         # self.conv_1d = TransformerBlockWithMoE(d_model=512, num_heads=8, d_llm=1024, num_experts=4, top_k=2)
-        self.conv_1d = video_header(
-            vid_head = "Transf",
-            interaction = "DP",
-            temporal_layer=1,
-            num_experts=4,
-            clip_state_dict=None,
-            spe_cls_feature=400,)
+        # self.conv_1d = video_header(
+        #     vid_head = "Transf",
+        #     interaction = "DP",
+        #     temporal_layer=1,
+        #     num_experts=4,
+        #     clip_state_dict=None,
+        #     spe_cls_feature=400,)
         if frozen:
             for param in self.conv_2d.parameters():
                 param.requires_grad = False
@@ -417,7 +419,7 @@ class FeatureExtracter(nn.Module):
                 ):
         # src shape: (all_frames_in_batch, 3, 224, 224)
         src = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
-        src = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=1024)
+        src = self.conv_1d(src) #(batch_size, new_seq_len, new_dim=1024)
 
         return src 
 
@@ -454,6 +456,11 @@ class ImageCLIP(nn.Module):
             if "lora" in name:
                 param.requires_grad = True
         param_after_lora = sum(p.numel() for p in self.trans_encoder.parameters() if p.requires_grad)
+        
+        for layer in self.trans_encoder.base_model.model.layers[-3:]:
+            layer.fc1 = MoTE(d_model=1024, num_experts=4, scale_factor=4)
+            layer.activation_fn = nn.Identity()
+            layer.fc2 = nn.Identity()
     
         self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
 
@@ -588,6 +595,17 @@ class gloss_free_model(nn.Module):
         for name, param in self.mbart.named_parameters():
             if "lora" in name:
                 param.requires_grad = True
+
+        for layer in self.mbart.base_model.model.model.encoder.layers[-3:]:
+            layer.fc1 = MoTE(d_model=1024, num_experts=4, scale_factor=4)
+            layer.activation_fn = nn.Identity()
+            layer.fc2 = nn.Identity()
+
+        # Replace the last two layers of the decoder
+        for layer in self.mbart.base_model.model.model.decoder.layers[-3:]:
+            layer.fc1 = MoTE(d_model=1024, num_experts=4, scale_factor=4)
+            layer.activation_fn = nn.Identity()
+            layer.fc2 = nn.Identity()
 
         if config['model']['sign_proj']:
             self.sign_emb = V_encoder(emb_size=embed_dim,feature_size=embed_dim, config = config)

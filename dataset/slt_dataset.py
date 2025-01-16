@@ -116,22 +116,45 @@ class S2T_Dataset(Dataset):
             tgt_batch.append(tgt_sample)
 
         max_len = max([len(vid) for vid in img_tmp])
-        mask = torch.zeros((len(img_tmp), max_len), dtype=torch.long)
+        video_length = torch.LongTensor([np.ceil(len(vid) / 4.0) * 4 + 16 for vid in img_tmp])
+        left_pad = 8
+        right_pad = int(np.ceil(max_len / 4.0)) * 4 - max_len + 8
+        max_len = max_len + left_pad + right_pad
+        padded_video = [torch.cat(
+            (
+                vid[0][None].expand(left_pad, -1, -1, -1),
+                vid,
+                vid[-1][None].expand(max_len - len(vid) - left_pad, -1, -1, -1),
+            )
+            , dim=0)
+            for vid in img_tmp]
+        
+        img_tmp = [padded_video[i][0:video_length[i],:,:,:] for i in range(len(padded_video))]
+        
         for i in range(len(img_tmp)):
             src_length_batch.append(len(img_tmp[i]))
-            mask[i, : len(img_tmp[i])] = 1.0
-        src_length_batch = torch.tensor(src_length_batch).long()
+        src_length_batch = torch.tensor(src_length_batch)
         
         img_batch = torch.cat(img_tmp,0)
-        
+
+        new_src_lengths = (((src_length_batch-5+1) / 2)-5+1)/2
+        new_src_lengths = new_src_lengths.long()
+        mask_gen = []
+        for i in new_src_lengths:
+            tmp = torch.ones([i]) + 7
+            mask_gen.append(tmp)
+        mask_gen = pad_sequence(mask_gen, padding_value=PAD_IDX,batch_first=True)
+        img_padding_mask = (mask_gen != PAD_IDX).long()
         with self.tokenizer.as_target_tokenizer():
             tgt_input = self.tokenizer(tgt_batch, return_tensors="pt", padding = True, max_length=self.max_words, truncation=True)
 
         src_input = {}
         src_input['input_ids'] = img_batch
-        src_input['attention_mask'] = mask
+        src_input['attention_mask'] = img_padding_mask
         src_input['name_batch'] = name_batch
+
         src_input['src_length_batch'] = src_length_batch
+        src_input['new_src_length_batch'] = new_src_lengths
         
         return src_input, tgt_input
     

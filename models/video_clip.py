@@ -28,17 +28,17 @@ class QuickGELU(nn.Module):
 
 class MoTE(torch.nn.Module):
 
-    def __init__(self, d_model: int, num_experts=4):
+    def __init__(self, d_model: int, num_experts=4, scale_factor=4):
         super(MoTE, self).__init__()
         self.num_experts = num_experts
 
         # initialize experts
-        fc_up = nn.Linear(d_model, d_model * 2)
+        fc_up = nn.Linear(d_model, d_model * scale_factor)
         self.fc_up = torch.nn.ModuleList([copy.deepcopy(fc_up) for i in range(num_experts)])
 
         self.gelu = QuickGELU()
 
-        fc_dn = nn.Linear(d_model * 2, d_model)
+        fc_dn = nn.Linear(d_model * scale_factor, d_model)
         self.fc_dn = torch.nn.ModuleList([copy.deepcopy(fc_dn) for i in range(num_experts)])
 
         self.mote_fusion_weight = torch.nn.Parameter(torch.zeros(self.num_experts), requires_grad=False)

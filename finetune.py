@@ -40,6 +40,7 @@ def get_args_parser():
     parser.add_argument('--num_workers', type=int, default=10, help='Number of workers.')
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
+    parser.add_argument('--run_ver', type=int, default=0, help='Data version.')
     
     parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
@@ -110,18 +111,18 @@ def main(args):
     args.output_dir = config['save']['output']
     args.log_dir = config['save']['output']
     args.save_csv = config['save']['csv']
-    args.save_csv = args.save_csv.split("/")[0] + str(args.data_ver) + "/"
+    args.save_csv = args.save_csv.split("/")[0] + str(args.run_ver) + "/"
     args.model_ckpt = config['training']['ckpt_path']
 
     # set logger
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if args.logger == 'wandb':
-        save_dir=f'{args.log_dir}/log_{current_time}_{args.data_ver}'
+        save_dir=f'{args.log_dir}/log_{current_time}_{args.run_ver}'
         setupWandB(storage=save_dir)
         logger = WandbLogger(project="multi-test", config=vars(args))
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
-    dirpath = f'{args.output_dir}/run_{current_time}_{args.data_ver}'
+    dirpath = f'{args.output_dir}/run_{current_time}_{args.run_ver}'
     print("Current Time = {}".format(current_time)) 
     
     # set callbacks
