@@ -40,23 +40,25 @@ class FineTuneModel(pl.LightningModule):
         state_dict = torch.load(args.model_ckpt, map_location='cpu')['state_dict']
         new_state_dict = OrderedDict()
         for k, v in state_dict.items():
+            # k = '.'.join(k.split('.')[1:])
+            # new_state_dict[k] = v
             if 'conv_2d' in k or 'conv_1d' in k:
                 k = 'backbone.'+'.'.join(k.split('.')[3:])
                 new_state_dict[k] = v
             if 'trans_encoder' in k:
                 k = 'mbart.base_model.model.model.encoder.'+'.'.join(k.split('.')[5:])
                 new_state_dict[k] = v
-
         ret = self.model.load_state_dict(new_state_dict, strict=False)
         print('Missing keys: \n', '\n'.join(ret.missing_keys))
         print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
-        for name, param in self.model.named_parameters():
-            if "backbone" in name or "mbart.base_model.model.model.encoder" in name:
-                param.requires_grad = False
-                print(f"Froze layer: {name}")
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                print(f"Unfroze layer: {name}")
+        # It is just for stage 1, not used for stage 2
+        # for name, param in self.model.named_parameters():
+        #     if "sign_emb" in name:
+        #         param.requires_grad = True
+        #         print(f"Unfrozen layer: {name}")
+        #     else:
+        #         param.requires_grad = False
+        #         # print(f"Frozen layer: {name}")
         #################Initialize the tokenizer####################
         self.tokenizer = MBartTokenizer.from_pretrained(self.config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
         lang_code_to_id = self.tokenizer.lang_code_to_id['de_DE']
@@ -119,13 +121,12 @@ class FineTuneModel(pl.LightningModule):
             self.validation_decoded = []
             self.validation_decoded_teacher = []
             self.validation_step_outputs = []
-
-        elif (self.current_epoch) % self.eval_freq == 0 and self.current_epoch != 0:
+        # elif (self.current_epoch) % self.eval_freq == 0 and self.current_epoch != 0:
             hypotheses = []
             hypotheses_teacher = []
             tgt_refs = []
             for idx in range(self.trainer.world_size):
-                df = pd.read_csv(self.csv_dire + f"val_outputs_{self.current_epoch}_{idx}.csv", sep='|')
+                df = pd.read_csv(self.csv_dire + f"val_outputs_{self.current_epoch+1}_{idx}.csv", sep='|')
                 hypotheses.extend([str(item) for item in df['hypotheses'].tolist()]) # df['hypotheses'].tolist()
                 hypotheses_teacher.extend([str(item) for item in df['hypotheses_teacher'].tolist()]) # df['hypotheses_teacher'].tolist()
                 tgt_refs.extend([str(item) for item in df['targets'].tolist()]) # df['targets'].tolist()

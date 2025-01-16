@@ -97,9 +97,8 @@ class FeatureExtracter(nn.Module):
                 src: Tensor,
                 src_length_batch
                 ):
-        # src shape: (all_frames_in_batch, 3, 224, 224)
-        src = self.conv_2d(src,src_length_batch) #(batch_size, seq_len, dim=512)
-        src = self.conv_1d(src) #(batch_size, new_seq_len, new_dim=1024)
+        src = self.conv_2d(src,src_length_batch)
+        src = self.conv_1d(src)
 
         return src
 
@@ -114,7 +113,7 @@ class TextCLIP(nn.Module):
         return txt_logits
 
 class ImageCLIP(nn.Module):
-    def __init__(self, config, inplanes=1024, planes=1024, head_type='linear') :
+    def __init__(self, config, inplanes=1024, planes=1024, head_type='linear'):
         super(ImageCLIP, self).__init__()
         self.config = config
         self.model =  FeatureExtracter(resent_path=config['model']['resnet'])
@@ -202,8 +201,9 @@ class SLRCLIP(nn.Module):
         ground_truth = self.create_soft_target_matrix_with_gradients(
             batch_size=logits_per_image.shape[0],
             text_sim_matrix=text_sim_matrix,
-            scale_off_diag=0.0
+            scale_off_diag=0.0,
         )
+
         return logits_per_image, logits_per_text, ground_truth
 
 def config_decoder(config):
