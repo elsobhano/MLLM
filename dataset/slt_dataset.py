@@ -8,7 +8,7 @@ import yaml
 import torchvision.transforms as T
 from vidaug import augmentors as va
 from torchvision import transforms
-
+import pandas as pd
 import pytorch_lightning as pl
 from transformers import MBartTokenizer
 
@@ -20,6 +20,38 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 SI_IDX,PAD_IDX, UNK_IDX,BOS_IDX, EOS_IDX = 0 ,1 ,2 ,3 ,4
+
+def jaccard_similarity(set1, set2):
+    """
+    Compute the Jaccard distance between two sets.
+    """
+    intersection = set1.intersection(set2)
+    union = set1.union(set2)
+    if len(union) == 0:
+        return 0  # If both sets are empty, distance is 1
+    return len(intersection) / len(union)
+
+def create_jaccard_matrix(lists_of_glosses):
+    """
+    Create an N x N Jaccard distance matrix for N lists of pseudo-glosses.
+    """
+    N = len(lists_of_glosses)
+    matrix = torch.zeros((N, N))  # Initialize N x N matrix with zeros
+
+    for i in range(N):
+        for j in range(N):
+            if i == j:
+                matrix[i][j] = 1  # Diagonal elements are 1
+            else:
+                # Compute Jaccard distance between list i and list j
+                similarity = jaccard_similarity(set(lists_of_glosses[i]), set(lists_of_glosses[j]))
+                matrix[i][j] = round(similarity, 2)
+                matrix[j][i] = round(similarity, 2)  # Fill the lower triangle with the similarity  # Symmetric matrix
+
+    return matrix
+
+
+
 class S2T_Dataset(Dataset):
 
     def __init__(self, path, tokenizer, config, phase, max_words=128, resize=256, input_size=224):
@@ -30,6 +62,15 @@ class S2T_Dataset(Dataset):
         self.input_size = input_size
         
         self.raw_data = load_dataset_file(path)
+        if phase == 'train':
+            pseudo_add = '/home/sobhan/Documents/Code/MLLM/data/pseudo_gloss_train.csv'
+            self.pseudo_data = pd.read_csv(pseudo_add, delimiter=',')
+        elif phase == 'dev':
+            pseudo_add = '/home/sobhan/Documents/Code/MLLM/data/pseudo_gloss_dev.csv'
+            self.pseudo_data = pd.read_csv(pseudo_add, delimiter=',')
+        elif phase == 'test':
+            pseudo_add = '/home/sobhan/Documents/Code/MLLM/data/pseudo_gloss_test.csv'
+            self.pseudo_data = pd.read_csv(pseudo_add, delimiter=',')
 
         self.tokenizer = tokenizer
 
@@ -59,12 +100,15 @@ class S2T_Dataset(Dataset):
         # print(index)
         key = self.list[index]
         sample = self.raw_data[key]
+        pseudo_glosses = self.pseudo_data[key == self.pseudo_data['name']]['pseudo_gloss'].to_list()
+        pseudo_glosses = pseudo_glosses[0].split(' ')
+        pseudo_glosses = [gloss.lower() for gloss in pseudo_glosses]
         name_sample = sample['name']
         tgt_sample = sample['text']
         
         img_sample = self.load_imgs(name_sample)
         # print(img_sample.shape)
-        return name_sample, img_sample, tgt_sample
+        return name_sample, img_sample, tgt_sample, pseudo_glosses
     
     def load_imgs(self, file_name):
         phase, file_name = file_name.split('/')
@@ -106,14 +150,15 @@ class S2T_Dataset(Dataset):
     
     def collate_fn(self, batch):
         tgt_batch,img_tmp,src_length_batch,name_batch = [],[],[],[]
+        pseudo_glosses = []
 
-        for name_sample, img_sample, tgt_sample in batch:
+        for name_sample, img_sample, tgt_sample, pseudo_glosse in batch:
 
             name_batch.append(name_sample)
-
             img_tmp.append(img_sample)
-
             tgt_batch.append(tgt_sample)
+            pseudo_glosses.append(pseudo_glosse)
+            
 
         max_len = max([len(vid) for vid in img_tmp])
         video_length = torch.LongTensor([np.ceil(len(vid) / 4.0) * 4 + 16 for vid in img_tmp])
@@ -155,6 +200,8 @@ class S2T_Dataset(Dataset):
 
         src_input['src_length_batch'] = src_length_batch
         src_input['new_src_length_batch'] = new_src_lengths
+        
+        jaccard_matrix = create_jaccard_matrix(pseudo_glosses)
         
         return src_input, tgt_input
     
