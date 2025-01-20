@@ -7,7 +7,8 @@ __pycache__/
 *.so
 
 
-
+cc.en.300.bin
+cc.en.300.bin.gz
 ckpts/
 _new/
 desc/
