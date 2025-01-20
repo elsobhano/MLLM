@@ -134,7 +134,7 @@ def main(args):
     
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn')  # Set the start method to 'spawn'
+    # multiprocessing.set_start_method('spawn')  # Set the start method to 'spawn'
     args = get_args_parser()
     args = args.parse_args()
     if args.output_dir:
