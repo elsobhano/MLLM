@@ -1,7 +1,7 @@
 import torch
 import torch.backends.cudnn as cudnn
 from models.Pretrain_Model import PreTrainModel
-
+import multiprocessing
 from models.utils import manage_directory
 from dataset.slt_dataset import DataModule
 import pytorch_lightning as pl
@@ -134,6 +134,7 @@ def main(args):
     
 
 if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn')  # Set the start method to 'spawn'
     args = get_args_parser()
     args = args.parse_args()
     if args.output_dir:

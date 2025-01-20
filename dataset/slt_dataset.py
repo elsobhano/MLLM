@@ -75,11 +75,18 @@ class S2T_Dataset(Dataset):
     def load_data(self, file_name):
         phase, file_name = file_name.split('/')
         folder = os.path.join(self.lmdb_path, phase)
-        # print(folder, file_name)
-        data = torch.from_numpy(read_lmdb_folder(folder, file_name + '_desc'))
-        if data.shape[0] > self.max_length:
-            data = data[:self.max_length]
-        return data
+        # folder = '/home/sobhan/Documents/Datasets/'
+        # file_name = '11August_2010_Wednesday_tagesschau-1'
+        data = torch.load(folder + '/' + file_name + '_emb.pt')
+        # print('Huge data loaded!')
+        num_frames = len(data.keys())
+        if num_frames > self.max_length:
+            num_frames = self.max_length
+        
+        data_torch = torch.empty(num_frames, 3584)
+        for i in range(num_frames):
+            data_torch[i] = torch.mean(data[i]['op_sentence'], dim=0)
+        return data_torch
     
     def load_imgs(self, file_name):
         phase, file_name = file_name.split('/')

@@ -1,5 +1,5 @@
 data:
-    lmdb_path: /home/sobhan/Documents/Code/MLLM/desc
+    lmdb_path: /mnt/fast/nobackup/scratch4weeks/oc00271/pheonix_outputs_HANDSHAPE
     lmdb_path_images: /home/sobhan/Documents/Code/LLaMA-Adapter/SQA-Lightning/src/sqa/data/lmdb
     max_length: 300
     labels: /home/sobhan/Documents/Code/MLLM/data/labels

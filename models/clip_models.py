@@ -2,13 +2,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import MBartForConditionalGeneration
-from models.i3d import InceptionI3d
 from peft import get_peft_model, LoraConfig, TaskType
 import numpy as np
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 import torchvision
 import math
+import warnings
+# Ignore FutureWarning messages
+warnings.filterwarnings("ignore", category=FutureWarning)
+# Your code here
 PAD_IDX = 1
 
 def make_resnet(name='resnet18', resnet_path=None):
@@ -34,7 +37,7 @@ class resnet(nn.Module):
     def __init__(self, resnet_path):
         super(resnet, self).__init__()
         self.resnet = make_resnet(name='resnet18', resnet_path=resnet_path)
-        self.mapper = nn.Linear(1024, 512)
+        self.mapper = nn.Linear(3584, 512)
 
     def forward(self, x, d ,lengths):
         x = self.resnet(x)
