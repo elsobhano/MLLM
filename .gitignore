@@ -5,10 +5,9 @@ __pycache__/
 
 # C extensions
 *.so
-
-
-cc.en.300.bin
-cc.en.300.bin.gz
+*phx_pkl
+*.bin
+*.bin.gz
 ckpts/
 _new/
 desc/

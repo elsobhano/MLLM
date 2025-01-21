@@ -4,7 +4,7 @@ import pytorch_lightning as pl
 import os
 import wandb
 from collections import OrderedDict
-from models.utils import KLLoss
+from models.utils import KLLoss, PG_Loss
 from models.clip_models import SLRCLIP
 import yaml
 
@@ -23,8 +23,10 @@ class PreTrainModel(pl.LightningModule):
         #################Set the Optimizer####################
         self.lr = lr
         criterion = KLLoss()
+        pg_criterion = PG_Loss()
         self.loss_img = criterion
         self.loss_txt = criterion
+        self.loss_pg = pg_criterion
         ######################Prompts#######################
     
     def forward(self, samples):
@@ -36,13 +38,18 @@ class PreTrainModel(pl.LightningModule):
         lr = optimizer.param_groups[0]['lr']
         self.log('learning_rate', lr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-    def training_step(self, batch, batch_idx):
-        logits_per_image, logits_per_text, ground_truth = self(batch)
-        loss_imgs = self.loss_img(logits_per_image, ground_truth)
-        loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        total_loss = (loss_imgs + loss_texts)/2.0
+    def training_step(self, input_batch, batch_idx):
+        batch, psp_ground_truth = input_batch[:-1], input_batch[-1]
+        logits_per_image, logits_per_text, clip_ground_truth, psp_logits = self(batch)
+        loss_imgs = self.loss_img(logits_per_image, clip_ground_truth)
+        loss_texts = self.loss_txt(logits_per_text, clip_ground_truth)
+        train_clip_loss = (loss_imgs + loss_texts)/2.0
+        train_psp_loss = self.loss_pg(psp_logits, psp_ground_truth)
+        train_total_loss = train_clip_loss + 0.5*train_psp_loss
         
-        self.log("train_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_clip_loss", train_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_psp_loss", train_psp_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_total_loss", train_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
         # Log gradient norm
         # total_norm = 0.0
@@ -51,26 +58,36 @@ class PreTrainModel(pl.LightningModule):
         #         total_norm += p.grad.norm(2).item()
         # self.log("grad_norm", total_norm, on_step=True, on_epoch=False, prog_bar=True, sync_dist=True)
 
-        return total_loss
+        return train_total_loss
 
-    def validation_step(self, batch, batch_idx):
-        logits_per_image, logits_per_text, ground_truth = self(batch)
-        loss_imgs = self.loss_img(logits_per_image, ground_truth)
-        loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        total_loss = (loss_imgs + loss_texts)/2.0
+    def validation_step(self, input_batch, batch_idx):
+        batch, psp_ground_truth = input_batch[:-1], input_batch[-1]
+        logits_per_image, logits_per_text, clip_ground_truth, psp_logits = self(batch)
+        loss_imgs = self.loss_img(logits_per_image, clip_ground_truth)
+        loss_texts = self.loss_txt(logits_per_text, clip_ground_truth)
+        val_clip_loss = (loss_imgs + loss_texts)/2.0
+        val_psp_loss = self.loss_pg(psp_logits, psp_ground_truth)
+        val_total_loss = val_clip_loss + 0.5*val_psp_loss
         
-        self.log("val_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        return total_loss
+        self.log("val_clip_loss", val_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_psp_loss", val_psp_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_total_loss", val_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        return val_total_loss
     
-    def test_step(self, batch, batch_idx):
-        logits_per_image, logits_per_text, ground_truth = self(batch)
-        loss_imgs = self.loss_img(logits_per_image, ground_truth)
-        loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        total_loss = (loss_imgs + loss_texts)/2.0
-
-        self.log("test_loss", total_loss, sync_dist=True)
+    def test_step(self, input_batch, batch_idx):
+        batch, psp_ground_truth = input_batch[:-1], input_batch[-1]
+        logits_per_image, logits_per_text, clip_ground_truth, psp_logits = self(batch)
+        loss_imgs = self.loss_img(logits_per_image, clip_ground_truth)
+        loss_texts = self.loss_txt(logits_per_text, clip_ground_truth)
+        test_clip_loss = (loss_imgs + loss_texts)/2.0
+        test_psp_loss = self.loss_pg(psp_logits, psp_ground_truth)
+        test_total_loss = test_clip_loss + 0.5*test_psp_loss
         
-        return total_loss
+        self.log("test_clip_loss", test_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("test_psp_loss", test_psp_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("test_total_loss", test_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        
+        return test_total_loss
 
     def add_weight_decay(self, weight_decay, skip_list=()):
         """Custom method to create parameter groups with/without weight decay."""

@@ -7,6 +7,7 @@ import numpy as np
 import importlib
 
 import fasttext.util
+import pickle
 # from dataloaders.data_utils.file_utils import read_pickle
 # import ignite.distributed as idist
 
@@ -50,7 +51,8 @@ class HeadModel(nn.Module):
         #     idist.barrier()
         ft = fasttext.load_model(f"cc.{emb_lang}.300.bin")
 
-        dict_processed_words = read_pickle(emb_pkl_dir) # DICTIONARY CONTAINING THE {<PSUEDOGLOSS>:<ID>}
+        with open(emb_pkl_dir, 'rb') as f:
+            dict_processed_words = pickle.load(f) # DICTIONARY CONTAINING THE {<PSUEDOGLOSS>:<ID>}
         dict_lem_to_id = dict_processed_words["dict_lem_to_id"]
         vector = torch.zeros((len(dict_lem_to_id), 300))
         for key, value in dict_lem_to_id.items():
@@ -64,7 +66,7 @@ class HeadModel(nn.Module):
         self.num_classes = num_classes
         self.dropout = nn.Dropout(dropout)
 
-    def logit_compare_embed(self, out, vocab, mask):
+    def logit_compare_embed(self, out, vocab):
         N, T, C = out.shape
 
         vocab = torch.cat([vocab, self.zero_embedding], dim=1)
@@ -90,7 +92,7 @@ class HeadModel(nn.Module):
 
         y = self.fc_hidden(self.dropout(x))
 
-        time_res = self.logit_compare_embed(y, self.vocab_embedding, mask)
+        time_res = self.logit_compare_embed(y, self.vocab_embedding)
         cls_temp = torch.clamp(self.class_temperature, 0.01, 1.0)
         cls_softmax = (time_res / cls_temp).softmax(axis=-1)
         time_mask = (
@@ -104,7 +106,7 @@ class HeadModel(nn.Module):
 
         softmax_scores = cls_softmax * time_softmax
         class_scores = softmax_scores.sum(axis=-2)
-        logits = class_scores[:, : self.num_classes]
+        logits = class_scores[:,:]
 
         return {
             "time_res": time_res,
@@ -118,10 +120,10 @@ if __name__ == "__main__":
 
     model = HeadModel(
         in_dim=1024,
-        hidden_dim=1024,
+        hidden_dim=300,
         num_classes=2,
-        emb_lang="en",
-        emb_pkl_dir="",
+        emb_lang="de",
+        emb_pkl_dir="data/processed_words.phx_pkl",
         trainable_emb=True,
         dropout=0.5,
         class_temperature=0.1,

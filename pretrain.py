@@ -30,7 +30,7 @@ def get_args_parser():
                         help='Path to the MBart tokenizer.')
     parser.add_argument('--encoder_ckpt', type=str, default=None, help='Path to the encoder checkpoint.')
     parser.add_argument('--model_ckpt', type=str, default=None, help='Path to the model checkpoint.')
-    parser.add_argument('--lr', type=float, default=8e-4, help='Learning rate.')
+    parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate.')
     ##################Data Params##########################################################
     parser.add_argument('--text_path', type=str, default="/mnt/fast/nobackup/users/sa04359/CLIP/MLLM/data/labels", 
                         help='Path to the text data.')
@@ -39,10 +39,10 @@ def get_args_parser():
     parser.add_argument('--data_config', type=str, default='configs/config.yaml',
                         help='Path to the data config file.')  
     parser.add_argument('--num_workers', type=int, default=10, help='Number of workers.')
-    parser.add_argument('--batch_size', type=int, default=2, help='Batch size.')
+    parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
     
-    parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
+    parser.add_argument('--logger', type=str, default='wandb', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
     parser.add_argument('--output_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
     parser.add_argument('--log_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
@@ -78,7 +78,7 @@ def main(args):
     if args.logger == 'wandb':
         save_dir=f'{args.log_dir}/log_{current_time}'
         setupWandB(storage=save_dir)
-        logger = WandbLogger(project="CLIP", config=vars(args))
+        logger = WandbLogger(project="New-CLIP", config=vars(args))
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     
@@ -89,7 +89,7 @@ def main(args):
     checkpoint_callback = ModelCheckpoint(
     save_top_k=1,
     save_last=True,
-    monitor="val_loss",
+    monitor="val_total_loss",
     mode="min",
     dirpath=dirpath,
     filename="best-{epoch:03d}-{val_loss:.3f}",

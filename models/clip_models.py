@@ -12,6 +12,7 @@ from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 import torchvision
 import math
+from psp_head import HeadModel
 PAD_IDX = 1
 
 def make_resnet(name='resnet18', resnet_path=None):
@@ -384,6 +385,20 @@ class ImageCLIP(nn.Module):
         super(ImageCLIP, self).__init__()
         self.config = config
         self.model =  FeatureExtracter(dino_path=config['model']['dino'])
+        post_params = {
+        "in_dim": 1024,
+        "hidden_dim": 300,
+        "num_classes": 2300,
+        "dropout": 0.2,
+        "class_temperature": 0.1,
+        "time_temperature": 0.1,
+        "dynamic_time_temperatures": False,
+        "dynamic_class_temperatures": False,
+        "emb_lang": "de",
+        "emb_pkl_dir": f"data/processed_words.phx_pkl",
+        "trainable_emb": True,
+    }
+        self.head_model = HeadModel(**post_params)
 
         trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
         lora_config = LoraConfig(
@@ -408,6 +423,7 @@ class ImageCLIP(nn.Module):
     def forward(self, src_input):
         x, attention_mask = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         # attention_mask = src_input['attention_mask']
+        psp_logits = self.head_model(x, attention_mask)['logits']
 
         B, N, C = x.shape
         cls_token = self.cls_token.repeat(B, 1, 1)
@@ -417,7 +433,7 @@ class ImageCLIP(nn.Module):
         outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
         last_hidden_state = outs['last_hidden_state']
         img_logits = last_hidden_state.mean(dim=1)
-        return img_logits
+        return img_logits, psp_logits
 
 class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
@@ -449,7 +465,7 @@ class SLRCLIP(nn.Module):
         return target_matrix
 
     def forward(self, src_input, tgt_input):
-        image_features = self.model_images(src_input)
+        image_features, psp_logits = self.model_images(src_input)
         text_features = self.model_txt(tgt_input)
 
         # normalized features
@@ -468,7 +484,7 @@ class SLRCLIP(nn.Module):
             text_sim_matrix=text_sim_matrix,
             scale_off_diag=0.0,
         )
-        return logits_per_image, logits_per_text, ground_truth
+        return logits_per_image, logits_per_text, ground_truth, psp_logits
 
 def config_decoder(config):
     from transformers import AutoConfig

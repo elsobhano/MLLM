@@ -7,7 +7,7 @@ model:
     tokenizer: /home/sobhan/Documents/Code/MLLM/MBart_trimmed
     transformer: /home/sobhan/Documents/Code/MLLM/MBart_trimmed
     resnet: /home/sobhan/Documents/Code/MLLM/ckpts/resnet18.pth
-    dino: /tmp/tmp.pth
+    dino: /home/sobhan/Documents/Code/PSP/tmp/tmp.pth
     embed_dim: 1024
     sign_proj: True
 training:

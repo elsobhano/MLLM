@@ -181,3 +181,36 @@ def local_1d_pattern(seq_len: int, window_size: int) -> torch.Tensor:
         mask[i, start:end] = 1
     
     return mask
+
+
+import torch.nn.functional as F
+import torch
+import numpy as np
+import torch.nn as nn
+
+
+class PG_Loss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.bce_loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
+
+    def forward(self, src, tgt):
+        # if isinstance(self.src_name, tuple):
+        #     src = y_pred
+        #     for mn in self.src_name:
+        #         src = src[mn]
+        # else:
+        #     src = y_pred[self.src_name]
+        # tgt = target[self.tgt_name]
+
+        gloss_targets = torch.zeros(
+            src.shape[0], src.shape[-1], dtype=src.dtype, device=src.device
+        )
+        for i, t in enumerate(tgt):
+            for t_i in t:
+                gloss_targets[i, t_i] = 1.0
+
+        loss = self.bce_loss_fn(torch.clamp(src, 1e-8, 1 - 1e-8), gloss_targets)
+        # loss = self.bce_loss_fn(src, gloss_targets)
+
+        return loss.mean()
