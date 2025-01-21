@@ -75,8 +75,8 @@ class S2T_Dataset(Dataset):
     def load_data(self, file_name):
         phase, file_name = file_name.split('/')
         folder = os.path.join(self.lmdb_path, phase)
-        # folder = '/home/sobhan/Documents/Datasets/'
-        # file_name = '11August_2010_Wednesday_tagesschau-1'
+        folder = '/home/sobhan/Documents/Datasets/'
+        file_name = '11August_2010_Wednesday_tagesschau-1'
         data = torch.load(folder + '/' + file_name + '_emb.pt', map_location='cpu')
         # print('Huge data loaded!')
         num_frames = len(data.keys())
