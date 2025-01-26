@@ -78,7 +78,7 @@ def main(args):
     if args.logger == 'wandb':
         save_dir=f'{args.log_dir}/log_{current_time}'
         setupWandB(storage=save_dir)
-        logger = WandbLogger(project="New-CLIP", config=vars(args))
+        logger = WandbLogger(project="New-PSP", config=vars(args))
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     
@@ -92,7 +92,7 @@ def main(args):
     monitor="val_total_loss",
     mode="min",
     dirpath=dirpath,
-    filename="best-{epoch:03d}-{val_loss:.3f}",
+    filename="best-{epoch:03d}-{val_total_loss:.3f}",
     )
     # monitor_gradient_norm = MonitorGradientNorm()
     early_stop = EarlyStopping("val_loss", patience=args.epochs, mode="min", verbose=True)

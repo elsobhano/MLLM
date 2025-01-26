@@ -28,7 +28,7 @@ class PreTrainModel(pl.LightningModule):
         self.loss_txt = criterion
         self.loss_pg = pg_criterion
         ######################Prompts#######################
-    
+        self.landa = 1.0
     def forward(self, samples):
         src_input, tgt_input = samples
         return self.model(src_input, tgt_input)
@@ -45,7 +45,7 @@ class PreTrainModel(pl.LightningModule):
         loss_texts = self.loss_txt(logits_per_text, clip_ground_truth)
         train_clip_loss = (loss_imgs + loss_texts)/2.0
         train_psp_loss = self.loss_pg(psp_logits, psp_ground_truth)
-        train_total_loss = train_clip_loss + 0.5*train_psp_loss
+        train_total_loss = train_clip_loss + self.landa*train_psp_loss
         
         self.log("train_clip_loss", train_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("train_psp_loss", train_psp_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -67,7 +67,7 @@ class PreTrainModel(pl.LightningModule):
         loss_texts = self.loss_txt(logits_per_text, clip_ground_truth)
         val_clip_loss = (loss_imgs + loss_texts)/2.0
         val_psp_loss = self.loss_pg(psp_logits, psp_ground_truth)
-        val_total_loss = val_clip_loss + 0.5*val_psp_loss
+        val_total_loss = val_clip_loss + self.landa*val_psp_loss
         
         self.log("val_clip_loss", val_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val_psp_loss", val_psp_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -81,7 +81,7 @@ class PreTrainModel(pl.LightningModule):
         loss_texts = self.loss_txt(logits_per_text, clip_ground_truth)
         test_clip_loss = (loss_imgs + loss_texts)/2.0
         test_psp_loss = self.loss_pg(psp_logits, psp_ground_truth)
-        test_total_loss = test_clip_loss + 0.5*test_psp_loss
+        test_total_loss = test_clip_loss + self.landa*test_psp_loss
         
         self.log("test_clip_loss", test_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("test_psp_loss", test_psp_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)

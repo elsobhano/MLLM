@@ -93,14 +93,14 @@ class FineTuneModel(pl.LightningModule):
         self.log('learning_rate', lr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def training_step(self, batch, batch_idx):
-        src_input, tgt_input = batch
+        src_input, tgt_input, _ = batch
         outputs = self.model(src_input, tgt_input)
         loss = self.calc_loss(outputs, tgt_input['input_ids'])
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        src_input, tgt_input = batch
+        src_input, tgt_input, _ = batch
         outputs = self.model(src_input, tgt_input)
         loss = self.calc_loss(outputs, tgt_input['input_ids'])
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -130,9 +130,9 @@ class FineTuneModel(pl.LightningModule):
             tgt_refs = []
             for idx in range(self.trainer.world_size):
                 df = pd.read_csv(self.csv_dire + f"val_outputs_{self.current_epoch+1}_{idx}.csv", sep='|')
-                hypotheses.extend([str(item) for item in df['hypotheses'].tolist()]) # df['hypotheses'].tolist()
-                hypotheses_teacher.extend([str(item) for item in df['hypotheses_teacher'].tolist()]) # df['hypotheses_teacher'].tolist()
-                tgt_refs.extend([str(item) for item in df['targets'].tolist()]) # df['targets'].tolist()
+                hypotheses.extend([str(item) + ' .' for item in df['hypotheses'].tolist()]) # df['hypotheses'].tolist()
+                hypotheses_teacher.extend([str(item) + ' .' for item in df['hypotheses_teacher'].tolist()]) # df['hypotheses_teacher'].tolist()
+                tgt_refs.extend([str(item) + ' .' for item in df['targets'].tolist()]) # df['targets'].tolist()
             
             if isinstance(self.logger, TensorBoardLogger):
                 self.logger.experiment.add_text("hypotheses_teacher", "\n".join(hypotheses_teacher[:5]), self.current_epoch)
@@ -170,7 +170,7 @@ class FineTuneModel(pl.LightningModule):
         self.logger.experiment.log({f"{split}_outputs_{epoch}": table})
     
     def test_step(self, batch, batch_idx):
-        src_input, tgt_input = batch
+        src_input, tgt_input, _ = batch
         outputs = self.model(src_input, tgt_input)
         loss = self.calc_loss(outputs, tgt_input['input_ids'])
 
@@ -178,8 +178,8 @@ class FineTuneModel(pl.LightningModule):
 
         self.test_decoded = self.generate(src_input)
         self.test_step_outputs = self.tokenizer.batch_decode(tgt_input['input_ids'], skip_special_tokens=True)
-        tgt_refs = [str(item) for item in self.test_step_outputs]
-        hypotheses = [str(item) for item in self.test_decoded]
+        tgt_refs = [str(item) + ' .' for item in self.test_step_outputs]
+        hypotheses = [str(item) + ' .' for item in self.test_decoded]
         new_data = {"hypotheses": hypotheses, "targets": tgt_refs}
         file_path = self.csv_dire + f"test_outputs_{self.trainer.global_rank}.csv"
         self.add_data_to_csv(file_path, new_data, columns=["hypotheses", "targets"])
@@ -266,15 +266,15 @@ class FineTuneModel(pl.LightningModule):
         # Implement your own custom logic to clip gradients
         # You can call `self.clip_gradients` with your settings:
         self.clip_gradients(
-        optimizer,
-        gradient_clip_val=1.0,
-        gradient_clip_algorithm="value",
-        )
-        self.clip_gradients(
             optimizer,
             gradient_clip_val=1.0,
             gradient_clip_algorithm="norm",
         )
+        # self.clip_gradients(
+        # optimizer,
+        # gradient_clip_val=1.0,
+        # gradient_clip_algorithm="value",
+        # )
 
     def add_data_to_csv(self,file_path, new_data, columns):
         """

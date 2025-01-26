@@ -21,7 +21,7 @@ torch.set_float32_matmul_precision("medium")
 def get_args_parser():
     parser = argparse.ArgumentParser('Sign2GPT', add_help=False)
     
-    parser.add_argument('--epochs', default=10, type=int, metavar='N', help='number of total epochs to run')
+    parser.add_argument('--epochs', default=100, type=int, metavar='N', help='number of total epochs to run')
     parser.add_argument('--num_gpus', default=1, type=int, metavar='N', help='number of gpus per node')
     parser.add_argument('--eval_freq', default=2, type=int, metavar='N', 
                         help='The frequency of metric evaluation, e.g Bleu score')
@@ -40,8 +40,9 @@ def get_args_parser():
     parser.add_argument('--num_workers', type=int, default=10, help='Number of workers.')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
+    parser.add_argument('--run_ver', type=int, default=0, help='Data version.')
     
-    parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
+    parser.add_argument('--logger', type=str, default='wandb', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
     parser.add_argument('--output_dir', type=str, default="finetune_new", help='Output directory.')
     parser.add_argument('--log_dir', type=str, default="finetune_new", help='Output directory.')
@@ -63,7 +64,7 @@ def get_args_parser():
     # * Learning rate schedule parameters
     parser.add_argument('--sched', default='cosine', type=str, metavar='SCHEDULER',
                         help='LR scheduler (default: "cosine"')
-    parser.add_argument('--lr', type=float, default=5e-4, metavar='LR',
+    parser.add_argument('--lr', type=float, default=6e-4, metavar='LR',
                         help='learning rate (default: 5e-4)')
     parser.add_argument('--lr-noise', type=float, nargs='+', default=None, metavar='pct, pct',
                         help='learning rate noise on/off epoch percentages')
@@ -110,18 +111,18 @@ def main(args):
     args.output_dir = config['save']['output']
     args.log_dir = config['save']['output']
     args.save_csv = config['save']['csv']
-    args.save_csv = args.save_csv.split("/")[0] + str(args.data_ver) + "/"
+    args.save_csv = args.save_csv.split("/")[0] + str(args.run_ver) + "/"
     args.model_ckpt = config['training']['ckpt_path']
 
     # set logger
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if args.logger == 'wandb':
-        save_dir=f'{args.log_dir}/log_{current_time}_{args.data_ver}'
+        save_dir=f'{args.log_dir}/log_{current_time}_{args.run_ver}'
         setupWandB(storage=save_dir)
-        logger = WandbLogger(project="multi-test", config=vars(args))
+        logger = WandbLogger(project="dino-test", config=vars(args))
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
-    dirpath = f'{args.output_dir}/run_{current_time}_{args.data_ver}'
+    dirpath = f'{args.output_dir}/run_{current_time}_{args.run_ver}'
     print("Current Time = {}".format(current_time)) 
     
     # set callbacks
