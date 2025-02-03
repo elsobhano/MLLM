@@ -42,7 +42,7 @@ def get_args_parser():
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
     
-    parser.add_argument('--logger', type=str, default='wandb', help='Logger type.')
+    parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
     parser.add_argument('--output_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
     parser.add_argument('--log_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
@@ -102,7 +102,8 @@ def main(args):
                 config=args.data_config,
                 lr=args.lr, 
                 )
-    
+    print(sum(p.numel() for p in model.parameters()))
+    exit(0)
     tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'])
 
     data_module = DataModule(

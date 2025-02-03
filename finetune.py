@@ -147,7 +147,8 @@ def main(args):
                 args=args, 
                 eval_freq=args.eval_freq,
                 csv_dire=args.save_csv)
-
+    print(sum(p.numel() for p in model.parameters() if p.requires_grad))
+    exit(0)
 
     tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
     data_module = DataModule(

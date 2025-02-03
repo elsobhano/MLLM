@@ -45,7 +45,7 @@ class HeadModel(nn.Module):
             hidden_dim = in_dim
 
         # if idist.get_local_rank() == 0 or idist.get_world_size() == 0:
-        fasttext.util.download_model(emb_lang, if_exists="ignore")
+        # fasttext.util.download_model(emb_lang, if_exists="ignore")
         # exit(0)
         # if idist.get_world_size() > 0:
         #     idist.barrier()
@@ -58,6 +58,8 @@ class HeadModel(nn.Module):
         for key, value in dict_lem_to_id.items():
             vector[value] = torch.tensor(ft.get_word_vector(key))
 
+        print(vector.shape)
+        exit(0)
         self.vocab_embedding = torch.nn.Parameter(vector.permute(1, 0).unsqueeze(-1))
         self.vocab_embedding.requires_grad = trainable_emb
         zero_embedding = torch.zeros(hidden_dim, 1, 1)

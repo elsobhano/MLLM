@@ -354,7 +354,6 @@ class FeatureExtracter(nn.Module):
         # self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=300)
         # self.conv_1d = TwoLayerTransformerBlock(d_model=512, num_heads=8, d_llm=1024)
         self.conv_1d = Transformer(d_model=512, num_heads=8, layers=[2,2])
-
         if frozen:
             for param in self.conv_2d.parameters():
                 param.requires_grad = False
@@ -399,6 +398,7 @@ class ImageCLIP(nn.Module):
         "trainable_emb": True,
     }
         self.head_model = HeadModel(**post_params)
+        # self.head_model = nn.Identity()
 
         trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
         lora_config = LoraConfig(
