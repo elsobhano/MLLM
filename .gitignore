@@ -20,6 +20,7 @@ csv_outputs/
 csv_outputs0/
 *.sub
 *.pth
+*.part
 # Distribution / packaging
 output/
 outputs/
