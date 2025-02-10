@@ -16,6 +16,7 @@ class MBartFeatureExtractor:
         :param batch_size: Number of texts to process in each batch
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # self.device = torch.device('cpu')
         # Load the pretrained model and tokenizer
         self.tokenizer = MBartTokenizer.from_pretrained(model_name)
         self.model = MBartModel.from_pretrained(model_name).to(self.device)
@@ -26,7 +27,7 @@ class MBartFeatureExtractor:
         # Set batch size
         self.batch_size = batch_size
     
-    def extract_features(self, texts, max_length=512):
+    def extract_features(self, texts, max_length=512, pooling_strategy='mean'):
         """
         Extract [CLS] token features from input texts using batched processing
         
@@ -38,44 +39,33 @@ class MBartFeatureExtractor:
         if isinstance(texts, str):
             texts = [texts]
         
-        # Initialize list to store features
-        all_features = []
-        
+        # Initialize list to store features        
         # Process texts in batches
-        for i in range(0, len(texts), self.batch_size):
-            # Get current batch
-            batch_texts = texts[i:i+self.batch_size]
+        # Tokenize the batch
+        inputs = self.tokenizer(
+            texts,
+            return_tensors='pt', 
+            padding=True,
+        ).to(self.device)
+        
+        # Disable gradient calculation for inference
+        with torch.no_grad():
+            # Forward pass to get model outputs
+            outputs = self.model(**inputs)
             
-            # Tokenize the batch
-            inputs = self.tokenizer(
-                batch_texts, 
-                return_tensors='pt', 
-                padding=True,
-            ).to(self.device)
-            
-            # Disable gradient calculation for inference
-            with torch.no_grad():
-                # Forward pass to get model outputs
-                outputs = self.model(**inputs)
-                
-                # Extract the [CLS] token (first token) from the last hidden state
+            # Extract the [CLS] token (first token) from the last hidden state
+            if pooling_strategy == 'cls':
                 batch_features = outputs.last_hidden_state[:, 0, :]
                 batch_features = batch_features.cpu()
-                
-                # Add batch features to all features
-                all_features.append(batch_features)
+            elif pooling_strategy == 'mean':
+                batch_features = outputs.last_hidden_state.mean(dim=1)
+                batch_features = batch_features.cpu()
+            else:
+                raise ValueError(f"Unknown pooling strategy: {pooling_strategy}")
         
         # Concatenate all features
-        return torch.cat(all_features, dim=0)
-# Example usage
-# texts = [
-#     "Hello World.", 
-#     "Hi, how are you."
-# ]
-# feature_extractor = MBartFeatureExtractorDataset(texts, model_name="/home/sobhan/Documents/Code/mbart-large-cc25")
-# features = feature_extractor.extract_features()
-# print(features)
-# print(features[0].shape)
+        return batch_features
+
 
 # model_path = "/home/sobhan/Documents/Code/mbart-large-cc25" 
 def process_json_files(input_dir: str, output_dir: str, model_name: str, batch_size: int = 5):
@@ -106,9 +96,7 @@ def process_json_files(input_dir: str, output_dir: str, model_name: str, batch_s
             data = json.load(f)
         
         # Prepare texts to extract features from
-        texts = []
-        for key, item in data.items():
-                texts.append(item['op_sentence'])
+        texts = data['refined']
         
         # Extract features in batches
         features = feature_extractor.extract_features(texts)
@@ -158,10 +146,11 @@ def read_lmdb_folder(lmdb_path, folder_name=None):
     return data
 
 if __name__ == "__main__":
-    input_directory = "/home/sobhan/Documents/Code/Description/val"
-    output_directory = "/home/sobhan/Documents/Code/MLLM/desc/val"
+    input_directory = "/home/sobhan/Documents/Code/ShareGPT4Video/{stage}_output"
+    output_directory = "/home/sobhan/Documents/Datasets/desc_feat/{stage}"
     model_path = "/home/sobhan/Documents/Code/mbart-large-cc25"
     
-    # process_json_files(input_directory, output_directory, model_name=model_path)
-    # # data = read_lmdb_folder(lmdb_path="/home/sobhan/Documents/Code/MLLM/desc/test/01April_2010_Thursday_heute-6704_desc.lmdb")
+    # for stage in ["train", "dev", "test"]:
+    #     process_json_files(input_directory.format(stage=stage), output_directory.format(stage=stage), model_name=model_path)
+    data = read_lmdb_folder(lmdb_path="/home/sobhan/Documents/Datasets/desc_feat/dev/01April_2010_Thursday_heute-6697.lmdb")
     # print(data.shape)
