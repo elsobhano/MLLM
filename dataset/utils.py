@@ -72,14 +72,20 @@ def read_lmdb_folder(lmdb_path, folder_name=None):
     else:
         lmdb_file = os.path.join(lmdb_path, f"{folder_name}.lmdb")
     
-    env = lmdb.open(lmdb_file, readonly=True)
-    with env.begin() as txn:
-        images_data = txn.get("data".encode('ascii'))
+    env = lmdb.open(lmdb_file, readonly=True, max_readers=128, lock=False)
+    try:
+        with env.begin(buffers=True) as txn:
+            images_data = txn.get("data".encode('ascii'))
 
-    # Deserialize the list of images
-    images = pickle.loads(images_data)
+        # Deserialize the list of images
+        images = pickle.loads(images_data)
 
-    # Convert back from CHW to HWC format for visualization
-    # images = [np.transpose(img, (1, 2, 0)) for img in images]
+        # Convert back from CHW to HWC format for visualization
+        # images = [np.transpose(img, (1, 2, 0)) for img in images]
 
-    return images
+        return images
+    except Exception as e:
+        print(f"Error reading LMDB file {lmdb_file}: {e}")
+        raise
+    finally:
+        env.close()

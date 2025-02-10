@@ -2,6 +2,7 @@ data:
     lmdb_path: /home/sobhan/Documents/Code/LLaMA-Adapter/SQA-Lightning/src/sqa/data/lmdb
     max_length: 300
     labels: /home/sobhan/Documents/Code/MLLM/data/labels
+    desc_path: /home/sobhan/Documents/Datasets/desc_feat/
 model:
     I3D: /home/sobhan/Documents/Code/PSP/tmp/meinedgs_i3d.pth.tar
     tokenizer: /home/sobhan/Documents/Code/MLLM/MBart_trimmed
@@ -13,7 +14,7 @@ model:
 training:
     wandb: disabled # online or disabled
     scale_embedding: False
-    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-01-23_00-29-19/best-epoch=081-val_total_loss=0.964.ckpt
+    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-02-10_12-32-07/best-epoch=000-val_total_loss=1.361.ckpt
     ckpt_path_landa=0.5: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-01-21_01-22-53/best-epoch=085-val_loss=0.000.ckpt
     ckpt_path_old: /home/sobhan/Documents/Code/MLLM/outputs/run_2024-12-29_18-57-45/best-epoch=010-val_loss=0.605.ckpt
     ckpt_path_shit_result_multi_stage: /home/sobhan/Documents/Code/MLLM/ckpts/best-epoch=089-val_loss=3.722-val_bleu=14.258.ckpt

@@ -11,6 +11,7 @@ __pycache__/
 ckpts/
 _new/
 desc/
+dino-test/
 finetune_new/
 pretrain_new/
 wandb/

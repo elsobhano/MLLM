@@ -35,16 +35,18 @@ class FineTuneModel(pl.LightningModule):
         ################Set the Sign Encoder####################
         self.model = gloss_free_model(self.config, self.args)
         # for k, v in self.model.named_parameters():
-        #     print(k)
+        #     if 'mapper_1' in k or 'mapper_2' in k:
+        #         print(k)
         print('***********************************')
         print('Load parameters from Pretrained...')
         print('***********************************')
         state_dict = torch.load(args.model_ckpt, map_location='cpu')['state_dict']
         new_state_dict = OrderedDict()
         for k, v in state_dict.items():
-            # k = '.'.join(k.split('.')[1:])
-            # new_state_dict[k] = v
             if 'conv_2d' in k or 'conv_1d' in k:
+                k = 'backbone.'+'.'.join(k.split('.')[3:])
+                new_state_dict[k] = v
+            if 'mapper_1' in k or 'mapper_2' in k:
                 k = 'backbone.'+'.'.join(k.split('.')[3:])
                 new_state_dict[k] = v
             if 'trans_encoder' in k:

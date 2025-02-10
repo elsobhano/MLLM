@@ -351,9 +351,9 @@ class FeatureExtracter(nn.Module):
     def __init__(self, frozen=False, dino_path=None):
         super(FeatureExtracter, self).__init__()
         self.conv_2d = dino(dino_path) # InceptionI3d()
-        # self.conv_1d = LightweightTemporalTransformer(input_dim=512, hidden_dim=1024, num_heads=8, dropout=0.1, max_seq_len=300)
-        # self.conv_1d = TwoLayerTransformerBlock(d_model=512, num_heads=8, d_llm=1024)
-        self.conv_1d = Transformer(d_model=512, num_heads=8, layers=[2,2])
+        self.conv_1d = Transformer(d_model=512, num_heads=8, layers=[2,2], d_llm=512)
+        self.mapper_1 = nn.Linear(512, 1024)
+        self.mapper_2 = nn.Linear(1024, 512)
         if frozen:
             for param in self.conv_2d.parameters():
                 param.requires_grad = False
@@ -365,9 +365,12 @@ class FeatureExtracter(nn.Module):
                 ):
         # src shape: (all_frames_in_batch, 3, 224, 224)
         src, mask = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
-        src, mask = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=1024)
+        src, mask = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=512)
+        desc_1 = self.mapper_1(src) #(batch_size, new_seq_len, new_dim=1024)
+        desc_2 = self.mapper_2(desc_1) #(batch_size, new_seq_len, new_dim=512)
+        src = torch.cat([src, desc_2], dim=-1) #(batch_size, new_seq_len, new_dim=1024)
 
-        return src, mask
+        return src, mask, desc_1
 
 class TextCLIP(nn.Module):
     def __init__(self, config=None, inplanes=1024, planes=1024, head_type='identy'):
@@ -384,20 +387,7 @@ class ImageCLIP(nn.Module):
         super(ImageCLIP, self).__init__()
         self.config = config
         self.model =  FeatureExtracter(dino_path=config['model']['dino'])
-        post_params = {
-        "in_dim": 1024,
-        "hidden_dim": 300,
-        "num_classes": 2300,
-        "dropout": 0.2,
-        "class_temperature": 0.1,
-        "time_temperature": 0.1,
-        "dynamic_time_temperatures": False,
-        "dynamic_class_temperatures": False,
-        "emb_lang": "de",
-        "emb_pkl_dir": f"data/processed_words.phx_pkl",
-        "trainable_emb": True,
-    }
-        self.head_model = HeadModel(**post_params)
+        
         # self.head_model = nn.Identity()
 
         trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
@@ -406,7 +396,7 @@ class ImageCLIP(nn.Module):
             r=16,                          # Rank of the update matrices
             lora_alpha=32,                 # LoRA scaling factor
             lora_dropout=0.1,               # Dropout probability
-            target_modules=["q_proj", "v_proj"]
+            target_modules=["q_proj", "v_proj", "out_proj"]
         )
 
         self.trans_encoder = get_peft_model(trans_encoder, lora_config)
@@ -421,9 +411,8 @@ class ImageCLIP(nn.Module):
         self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
 
     def forward(self, src_input):
-        x, attention_mask = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
+        x, attention_mask, img_to_desc = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         # attention_mask = src_input['attention_mask']
-        psp_logits = self.head_model(x, attention_mask)['logits']
 
         B, N, C = x.shape
         cls_token = self.cls_token.repeat(B, 1, 1)
@@ -433,7 +422,10 @@ class ImageCLIP(nn.Module):
         outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
         last_hidden_state = outs['last_hidden_state']
         img_logits = last_hidden_state.mean(dim=1)
-        return img_logits, psp_logits
+        
+        img_to_desc = img_to_desc.mean(dim=1)
+        
+        return img_logits, img_to_desc
 
 class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
@@ -446,6 +438,7 @@ class SLRCLIP(nn.Module):
         self.model_images = ImageCLIP(config, inplanes=embed_dim, planes=embed_dim)
         trainable_params_model_images = sum(p.numel() for p in self.model_images.parameters() if p.requires_grad)
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        self.logit_scale_desc = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     def compute_text_similarities_static(self, text_features):
         # Clone text features and disable gradient tracking
@@ -464,19 +457,26 @@ class SLRCLIP(nn.Module):
         target_matrix += off_diag_matrix
         return target_matrix
 
-    def forward(self, src_input, tgt_input):
-        image_features, psp_logits = self.model_images(src_input)
+    def forward(self, src_input, tgt_input, desc_feats):
+        image_features, img_to_desc = self.model_images(src_input)
         text_features = self.model_txt(tgt_input)
 
         # normalized features
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        desc_feats = desc_feats / desc_feats.norm(dim=-1, keepdim=True)
+        img_to_desc = img_to_desc / img_to_desc.norm(dim=-1, keepdim=True)
 
         text_sim_matrix = self.compute_text_similarities_static(text_features)
         # cosine similarity as logits
         logit_scale = self.logit_scale.exp()
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logit_scale * text_features @ image_features.t()
+        
+        desc_sim_matrix = self.compute_text_similarities_static(desc_feats)
+        logit_scale_desc = self.logit_scale.exp()
+        logits_per_image_desc = logit_scale_desc * img_to_desc @ desc_feats.t()
+        logits_per_text_desc = logit_scale_desc * desc_feats @ img_to_desc.t()
 
         # ground_truth = torch.eye(logits_per_image.shape[0], device=logits_per_text.device, dtype=logits_per_image.dtype, requires_grad=False)
         ground_truth = self.create_soft_target_matrix_with_gradients(
@@ -484,7 +484,12 @@ class SLRCLIP(nn.Module):
             text_sim_matrix=text_sim_matrix,
             scale_off_diag=0.0,
         )
-        return logits_per_image, logits_per_text, ground_truth, psp_logits
+        ground_truth_desc = self.create_soft_target_matrix_with_gradients(
+            batch_size=logits_per_image_desc.shape[0],
+            text_sim_matrix=desc_sim_matrix,
+            scale_off_diag=0.0,
+        )
+        return logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc 
 
 def config_decoder(config):
     from transformers import AutoConfig
@@ -541,7 +546,7 @@ class gloss_free_model(nn.Module):
             r=16,                          # Rank of the update matrices
             lora_alpha=32,                 # LoRA scaling factor
             lora_dropout=0.1,               # Dropout probability
-            target_modules=["q_proj", "v_proj"]
+            target_modules=["q_proj", "v_proj", "out_proj"]
         )
         self.mbart = get_peft_model(self.mbart, lora_config)
         for param in self.mbart.parameters():
@@ -560,7 +565,7 @@ class gloss_free_model(nn.Module):
 
     def share_forward(self, src_input):
         
-        frames_feature, attention_mask = self.backbone(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask'])
+        frames_feature, attention_mask, _ = self.backbone(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask'])
         # attention_mask = src_input['attention_mask']
 
         inputs_embeds = self.sign_emb(frames_feature)

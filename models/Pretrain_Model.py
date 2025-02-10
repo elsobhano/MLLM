@@ -23,15 +23,16 @@ class PreTrainModel(pl.LightningModule):
         #################Set the Optimizer####################
         self.lr = lr
         criterion = KLLoss()
-        pg_criterion = PG_Loss()
+        criterion_desc = KLLoss()
         self.loss_img = criterion
         self.loss_txt = criterion
-        self.loss_pg = pg_criterion
+        self.loss_img_desc = criterion_desc
+        self.loss_txt_desc = criterion_desc
         ######################Prompts#######################
         self.landa = 1.0
     def forward(self, samples):
-        src_input, tgt_input = samples
-        return self.model(src_input, tgt_input)
+        src_input, tgt_input, desc_feats = samples
+        return self.model(src_input, tgt_input, desc_feats)
 
     def on_train_epoch_start(self):
         optimizer = self.trainer.optimizers[0]
@@ -39,52 +40,58 @@ class PreTrainModel(pl.LightningModule):
         self.log('learning_rate', lr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def training_step(self, input_batch, batch_idx):
-        batch, psp_ground_truth = input_batch[:-1], input_batch[-1]
-        logits_per_image, logits_per_text, clip_ground_truth, psp_logits = self(batch)
-        loss_imgs = self.loss_img(logits_per_image, clip_ground_truth)
-        loss_texts = self.loss_txt(logits_per_text, clip_ground_truth)
+        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc = self(input_batch)
+        
+        loss_imgs = self.loss_img(logits_per_image, ground_truth)
+        loss_texts = self.loss_txt(logits_per_text, ground_truth)
         train_clip_loss = (loss_imgs + loss_texts)/2.0
-        train_psp_loss = self.loss_pg(psp_logits, psp_ground_truth)
-        train_total_loss = train_clip_loss + self.landa*train_psp_loss
+        
+        loss_imgs_desc = self.loss_img_desc(logits_per_image_desc, ground_truth_desc)
+        loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
+        train_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
+        
+        train_total_loss = train_clip_loss + self.landa*train_clip_loss_desc
         
         self.log("train_clip_loss", train_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_psp_loss", train_psp_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_clip_loss_desc", train_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("train_total_loss", train_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        
-        # Log gradient norm
-        # total_norm = 0.0
-        # for p in self.parameters():
-        #     if p.grad is not None:
-        #         total_norm += p.grad.norm(2).item()
-        # self.log("grad_norm", total_norm, on_step=True, on_epoch=False, prog_bar=True, sync_dist=True)
 
         return train_total_loss
 
     def validation_step(self, input_batch, batch_idx):
-        batch, psp_ground_truth = input_batch[:-1], input_batch[-1]
-        logits_per_image, logits_per_text, clip_ground_truth, psp_logits = self(batch)
-        loss_imgs = self.loss_img(logits_per_image, clip_ground_truth)
-        loss_texts = self.loss_txt(logits_per_text, clip_ground_truth)
+        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc = self(input_batch)
+        
+        loss_imgs = self.loss_img(logits_per_image, ground_truth)
+        loss_texts = self.loss_txt(logits_per_text, ground_truth)
         val_clip_loss = (loss_imgs + loss_texts)/2.0
-        val_psp_loss = self.loss_pg(psp_logits, psp_ground_truth)
-        val_total_loss = val_clip_loss + self.landa*val_psp_loss
+        
+        loss_imgs_desc = self.loss_img_desc(logits_per_image_desc, ground_truth_desc)
+        loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
+        val_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
+        
+        val_total_loss = val_clip_loss + self.landa*val_clip_loss_desc
         
         self.log("val_clip_loss", val_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val_psp_loss", val_psp_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_clip_loss_desc", val_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val_total_loss", val_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        
         return val_total_loss
     
     def test_step(self, input_batch, batch_idx):
-        batch, psp_ground_truth = input_batch[:-1], input_batch[-1]
-        logits_per_image, logits_per_text, clip_ground_truth, psp_logits = self(batch)
-        loss_imgs = self.loss_img(logits_per_image, clip_ground_truth)
-        loss_texts = self.loss_txt(logits_per_text, clip_ground_truth)
+        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc = self(input_batch)
+        
+        loss_imgs = self.loss_img(logits_per_image, ground_truth)
+        loss_texts = self.loss_txt(logits_per_text, ground_truth)
         test_clip_loss = (loss_imgs + loss_texts)/2.0
-        test_psp_loss = self.loss_pg(psp_logits, psp_ground_truth)
-        test_total_loss = test_clip_loss + self.landa*test_psp_loss
+        
+        loss_imgs_desc = self.loss_img_desc(logits_per_image_desc, ground_truth_desc)
+        loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
+        test_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
+        
+        test_total_loss = test_clip_loss + self.landa*test_clip_loss_desc
         
         self.log("test_clip_loss", test_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("test_psp_loss", test_psp_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("test_clip_loss_desc", test_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("test_total_loss", test_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
         return test_total_loss

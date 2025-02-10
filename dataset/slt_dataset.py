@@ -36,7 +36,9 @@ class S2T_Dataset(Dataset):
         self.lmdb_path = config['data']['lmdb_path']
         self.phase = phase
         self.max_length = config['data']['max_length']
-        self.list = [key for key,value in self.raw_data.items()]   
+        self.list = [key for key,value in self.raw_data.items()]
+        
+        self.desc_path = config['data']['desc_path']
 
         sometimes = lambda aug: va.Sometimes(0.5, aug) # Used to apply augmentor with 50% probability
         self.seq = va.Sequential([
@@ -51,13 +53,9 @@ class S2T_Dataset(Dataset):
             # sometimes(Contrast(min=0.1, max=2.0)),
 
         ])
-        import pickle
-        emb_pkl_dir = 'data/processed_words.phx_pkl'
-        with open(emb_pkl_dir, 'rb') as f:
-            self.dict_processed_words = pickle.load(f)
     def __len__(self):
-        return len(self.raw_data)
-        # return 10
+        # return len(self.raw_data)
+        return 10
     
     def __getitem__(self, index):
         # print(index)
@@ -65,12 +63,17 @@ class S2T_Dataset(Dataset):
         sample = self.raw_data[key]
         name_sample = sample['name']
         tgt_sample = sample['text']
-        list_of_pg = self.dict_processed_words['dict_sentence'][tgt_sample]
-        pg_id = [self.dict_processed_words['dict_lem_to_id'][pg] for pg in list_of_pg]
         
         img_sample = self.load_imgs(name_sample)
+        desc_feature = self.load_desc(name_sample)
         # print(img_sample.shape)
-        return name_sample, img_sample, tgt_sample, pg_id
+        return name_sample, img_sample, tgt_sample, desc_feature
+    
+    def load_desc(self, file_name):
+        phase, file_name = file_name.split('/')
+        folder = os.path.join(self.desc_path, phase)
+        # print(folder, file_name)
+        return torch.from_numpy(read_lmdb_folder(folder, file_name))
     
     def load_imgs(self, file_name):
         phase, file_name = file_name.split('/')
@@ -112,14 +115,14 @@ class S2T_Dataset(Dataset):
     
     def collate_fn(self, batch):
         tgt_batch,img_tmp,src_length_batch,name_batch = [],[],[],[]
-        pgs = []
+        desc_features = []
 
-        for name_sample, img_sample, tgt_sample, pg_list in batch:
+        for name_sample, img_sample, tgt_sample, desc_feature in batch:
 
             name_batch.append(name_sample)
             img_tmp.append(img_sample)
             tgt_batch.append(tgt_sample)
-            pgs.append(pg_list)
+            desc_features.append(desc_feature)
 
         max_len = max([len(vid) for vid in img_tmp])
         mask = torch.zeros((len(img_tmp), max_len), dtype=torch.long)
@@ -129,7 +132,7 @@ class S2T_Dataset(Dataset):
         src_length_batch = torch.tensor(src_length_batch).long()
         
         img_batch = torch.cat(img_tmp,0)
-        
+        desc_features_batch = torch.cat(desc_features,0)
         with self.tokenizer.as_target_tokenizer():
             tgt_input = self.tokenizer(tgt_batch, return_tensors="pt", padding = True, max_length=self.max_words, truncation=True)
 
@@ -139,7 +142,7 @@ class S2T_Dataset(Dataset):
         src_input['name_batch'] = name_batch
         src_input['src_length_batch'] = src_length_batch
         
-        return src_input, tgt_input, pgs
+        return src_input, tgt_input, desc_features_batch
     
 class DataModule(pl.LightningDataModule):
     def __init__(
