@@ -119,7 +119,7 @@ def main(args):
     if args.logger == 'wandb':
         save_dir=f'{args.log_dir}/log_{current_time}_{args.run_ver}'
         setupWandB(storage=save_dir)
-        logger = WandbLogger(project="dino-test", config=vars(args))
+        logger = WandbLogger(project="C2-Finetune", config=vars(args))
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     dirpath = f'{args.output_dir}/run_{current_time}_{args.run_ver}'

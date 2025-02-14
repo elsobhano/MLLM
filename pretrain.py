@@ -73,12 +73,15 @@ def main(args):
     args.save_csv = args.save_csv.split("/")[0] + str(args.data_ver) + "/"
     args.model_ckpt = config['training']['ckpt_path']
     
+    if args.output_dir:
+        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    
     # set logger
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if args.logger == 'wandb':
         save_dir=f'{args.log_dir}/log_{current_time}'
         setupWandB(storage=save_dir)
-        logger = WandbLogger(project="New-PSP", config=vars(args))
+        logger = WandbLogger(project="C2-Pretrain", config=vars(args))
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     
@@ -135,6 +138,4 @@ def main(args):
 if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
-    if args.output_dir:
-        Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)

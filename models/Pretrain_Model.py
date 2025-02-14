@@ -22,17 +22,16 @@ class PreTrainModel(pl.LightningModule):
         self.model = SLRCLIP(self.config)
         #################Set the Optimizer####################
         self.lr = lr
-        criterion = KLLoss()
-        criterion_desc = KLLoss()
-        self.loss_img = criterion
-        self.loss_txt = criterion
-        self.loss_img_desc = criterion_desc
-        self.loss_txt_desc = criterion_desc
+        CLIPLoss= KLLoss()
+        self.loss_img = CLIPLoss
+        self.loss_txt = CLIPLoss
+        self.criterion = nn.CrossEntropyLoss(ignore_index=1, label_smoothing=0.2)
         ######################Prompts#######################
         self.landa = 1.0
+        
     def forward(self, samples):
-        src_input, tgt_input, desc_feats = samples
-        return self.model(src_input, tgt_input, desc_feats)
+        src_input, tgt_input = samples
+        return self.model(src_input, tgt_input)
 
     def on_train_epoch_start(self):
         optimizer = self.trainer.optimizers[0]
@@ -40,61 +39,66 @@ class PreTrainModel(pl.LightningModule):
         self.log('learning_rate', lr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def training_step(self, input_batch, batch_idx):
-        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc = self(input_batch)
+        tgt_input = input_batch[1]
+        logits_per_image, logits_per_text, ground_truth, shallow_translation = self(input_batch)
         
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
         train_clip_loss = (loss_imgs + loss_texts)/2.0
         
-        loss_imgs_desc = self.loss_img_desc(logits_per_image_desc, ground_truth_desc)
-        loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
-        train_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
         
-        train_total_loss = train_clip_loss + self.landa*train_clip_loss_desc
+        shallow_translation_loss = self.calc_loss(shallow_translation, tgt_input['input_ids'])
+        
+        train_total_loss = train_clip_loss + self.landa*shallow_translation_loss
         
         self.log("train_clip_loss", train_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_clip_loss_desc", train_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_shallow_loss", shallow_translation_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("train_total_loss", train_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return train_total_loss
 
     def validation_step(self, input_batch, batch_idx):
-        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc = self(input_batch)
+        tgt_input = input_batch[1]
+        logits_per_image, logits_per_text, ground_truth, shallow_translation = self(input_batch)
         
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
         val_clip_loss = (loss_imgs + loss_texts)/2.0
         
-        loss_imgs_desc = self.loss_img_desc(logits_per_image_desc, ground_truth_desc)
-        loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
-        val_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
         
-        val_total_loss = val_clip_loss + self.landa*val_clip_loss_desc
+        shallow_translation_loss = self.calc_loss(shallow_translation, tgt_input['input_ids'])
+        
+        val_total_loss = val_clip_loss + self.landa*shallow_translation_loss
         
         self.log("val_clip_loss", val_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val_clip_loss_desc", val_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_shallow_loss", shallow_translation_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val_total_loss", val_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
         return val_total_loss
     
     def test_step(self, input_batch, batch_idx):
-        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc = self(input_batch)
+        tgt_input = input_batch[1]
+        logits_per_image, logits_per_text, ground_truth, shallow_translation = self(input_batch)
         
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
         test_clip_loss = (loss_imgs + loss_texts)/2.0
         
-        loss_imgs_desc = self.loss_img_desc(logits_per_image_desc, ground_truth_desc)
-        loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
-        test_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
+        shallow_translation_loss = self.calc_loss(shallow_translation, tgt_input['input_ids'])
         
-        test_total_loss = test_clip_loss + self.landa*test_clip_loss_desc
+        test_total_loss = test_clip_loss + self.landa*shallow_translation_loss
         
         self.log("test_clip_loss", test_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("test_clip_loss_desc", test_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("test_shallow_loss", shallow_translation_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("test_total_loss", test_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
         return test_total_loss
+    
+    def calc_loss(self, outputs, targets):
+        # outputs = logit[:, :-1, :]
+        # targets = y[:, 1:]
+        vocab_siz =  outputs.size(-1)
+        return self.criterion(outputs.reshape(-1, vocab_siz), targets.reshape(-1))
 
     def add_weight_decay(self, weight_decay, skip_list=()):
         """Custom method to create parameter groups with/without weight decay."""

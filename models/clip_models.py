@@ -13,6 +13,7 @@ from torch.nn.utils.rnn import pad_sequence
 import torchvision
 import math
 from psp_head import HeadModel
+from models.text_decoder import DecoderWithMBartEmbeddings
 PAD_IDX = 1
 
 def make_resnet(name='resnet18', resnet_path=None):
@@ -385,34 +386,53 @@ class ImageCLIP(nn.Module):
         
         # self.head_model = nn.Identity()
 
-        trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
-        lora_config = LoraConfig(
-            inference_mode=False,          # Enable training
-            r=16,                          # Rank of the update matrices
-            lora_alpha=32,                 # LoRA scaling factor
-            lora_dropout=0.1,               # Dropout probability
-            target_modules=["q_proj", "v_proj", "out_proj"]
-        )
+        # trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
+        # lora_config = LoraConfig(
+        #     inference_mode=False,          # Enable training
+        #     r=16,                          # Rank of the update matrices
+        #     lora_alpha=32,                 # LoRA scaling factor
+        #     lora_dropout=0.1,               # Dropout probability
+        #     target_modules=["q_proj", "v_proj", "out_proj"]
+        # )
 
-        self.trans_encoder = get_peft_model(trans_encoder, lora_config)
-        for param in self.trans_encoder.parameters():
-            param.requires_grad = False
-        # Only unfreeze LoRA parameters
-        for name, param in self.trans_encoder.named_parameters():
-            if "lora" in name:
-                param.requires_grad = True
-        param_after_lora = sum(p.numel() for p in self.trans_encoder.parameters() if p.requires_grad)
+        # self.trans_encoder = get_peft_model(trans_encoder, lora_config)
+        # for param in self.trans_encoder.parameters():
+        #     param.requires_grad = False
+        # # Only unfreeze LoRA parameters
+        # for name, param in self.trans_encoder.named_parameters():
+        #     if "lora" in name:
+        #         param.requires_grad = True
+        # param_after_lora = sum(p.numel() for p in self.trans_encoder.parameters() if p.requires_grad)
 
     def forward(self, src_input):
         x, attention_mask = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         # attention_mask = src_input['attention_mask']
 
-        B, N, C = x.shape
-        outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
-        last_hidden_state = outs['last_hidden_state']
-        img_logits = last_hidden_state.mean(dim=1)
+        # B, N, C = x.shape
+        # outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
+        # last_hidden_state = outs['last_hidden_state']
         
-        return img_logits
+        
+        return x, attention_mask
+
+def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int):
+    """
+    Shift input ids one token to the right, and wrap the last non pad token (the <LID> token) Note that MBart does not
+    have a single `decoder_start_token_id` in contrast to other Bart-like models.
+    """
+    prev_output_tokens = input_ids.clone()
+
+    if pad_token_id is None:
+        raise ValueError("self.model.config.pad_token_id has to be defined.")
+    # replace possible -100 values in labels by `pad_token_id`
+    prev_output_tokens.masked_fill_(prev_output_tokens == -100, pad_token_id)
+
+    index_of_eos = (prev_output_tokens.ne(pad_token_id).sum(dim=1) - 1).unsqueeze(-1)
+    decoder_start_tokens = prev_output_tokens.gather(1, index_of_eos).squeeze()
+    prev_output_tokens[:, 1:] = prev_output_tokens[:, :-1].clone()
+    prev_output_tokens[:, 0] = decoder_start_tokens
+
+    return prev_output_tokens
 
 class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
@@ -425,8 +445,19 @@ class SLRCLIP(nn.Module):
         self.model_images = ImageCLIP(config, inplanes=embed_dim, planes=embed_dim)
         trainable_params_model_images = sum(p.numel() for p in self.model_images.parameters() if p.requires_grad)
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        self.logit_scale_desc = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-
+        
+        self.text_decoder = DecoderWithMBartEmbeddings(
+            trg_vocab_size=2172, 
+            embed_size=1024,
+            num_layers=3,
+            heads=8,
+            ff_dim=2048,
+            dropout=0.1, 
+            max_length=300, 
+            device='cuda', 
+            mbart_model_name=config['model']['transformer'],
+        )
+        a = 1
     def compute_text_similarities_static(self, text_features):
         # Clone text features and disable gradient tracking
         text_features_static = text_features.clone().detach()
@@ -444,39 +475,31 @@ class SLRCLIP(nn.Module):
         target_matrix += off_diag_matrix
         return target_matrix
 
-    def forward(self, src_input, tgt_input, desc_feats):
-        image_features, img_to_desc = self.model_images(src_input)
+    def forward(self, src_input, tgt_input):
+        encoder_last_hidden_state, src_mask = self.model_images(src_input) # encoder output
         text_features = self.model_txt(tgt_input)
 
+        decoder_input_ids = shift_tokens_right(tgt_input['input_ids'], pad_token_id=1)
+        shallow_translation = self.text_decoder(decoder_input_ids, encoder_last_hidden_state , tgt_input['attention_mask'], src_mask) 
+        
         # normalized features
+        image_features = encoder_last_hidden_state.mean(dim=1)
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-        desc_feats = desc_feats / desc_feats.norm(dim=-1, keepdim=True)
-        img_to_desc = img_to_desc / img_to_desc.norm(dim=-1, keepdim=True)
-
+        
         text_sim_matrix = self.compute_text_similarities_static(text_features)
         # cosine similarity as logits
         logit_scale = self.logit_scale.exp()
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logit_scale * text_features @ image_features.t()
         
-        desc_sim_matrix = self.compute_text_similarities_static(desc_feats)
-        logit_scale_desc = self.logit_scale.exp()
-        logits_per_image_desc = logit_scale_desc * img_to_desc @ desc_feats.t()
-        logits_per_text_desc = logit_scale_desc * desc_feats @ img_to_desc.t()
-
         # ground_truth = torch.eye(logits_per_image.shape[0], device=logits_per_text.device, dtype=logits_per_image.dtype, requires_grad=False)
         ground_truth = self.create_soft_target_matrix_with_gradients(
             batch_size=logits_per_image.shape[0],
             text_sim_matrix=text_sim_matrix,
             scale_off_diag=0.0,
         )
-        ground_truth_desc = self.create_soft_target_matrix_with_gradients(
-            batch_size=logits_per_image_desc.shape[0],
-            text_sim_matrix=desc_sim_matrix,
-            scale_off_diag=0.0,
-        )
-        return logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc 
+        return logits_per_image, logits_per_text, ground_truth, shallow_translation  
 
 def config_decoder(config):
     from transformers import AutoConfig
@@ -533,7 +556,7 @@ class gloss_free_model(nn.Module):
             r=16,                          # Rank of the update matrices
             lora_alpha=32,                 # LoRA scaling factor
             lora_dropout=0.1,               # Dropout probability
-            target_modules=["q_proj", "v_proj", "out_proj"]
+            target_modules=["q_proj", "v_proj", "k_proj" ,"out_proj"]
         )
         self.mbart = get_peft_model(self.mbart, lora_config)
         for param in self.mbart.parameters():
@@ -552,7 +575,7 @@ class gloss_free_model(nn.Module):
 
     def share_forward(self, src_input):
         
-        frames_feature, attention_mask, _ = self.backbone(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask'])
+        frames_feature, attention_mask = self.backbone(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask'])
         # attention_mask = src_input['attention_mask']
 
         inputs_embeds = self.sign_emb(frames_feature)

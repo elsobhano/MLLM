@@ -49,13 +49,17 @@ class MultiHeadSelfAttention(nn.Module):
         padding_mask = padding_mask.unsqueeze(1).unsqueeze(1)  # (N, 1, 1, seq_length)
 
         # Apply causal mask
-        causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_length, seq_length)
-        
-        combined_mask = padding_mask*causal_mask
-        diag_mask = torch.eye(query_len, dtype=torch.bool, device=energy.device).unsqueeze(0).unsqueeze(0)
-        combined_mask = combined_mask | diag_mask
-        
-        energy = energy.masked_fill(combined_mask == 0, float("-1e20"))
+        if causal_mask is not None:
+            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_length, seq_length)
+            combined_mask = padding_mask * causal_mask
+            diag_mask = torch.eye(query_len, dtype=torch.bool, device=energy.device).unsqueeze(0).unsqueeze(0)
+            combined_mask = combined_mask | diag_mask            
+        else:
+            combined_mask = padding_mask
+
+        combined_mask = combined_mask.to(energy.dtype)
+
+        energy = energy.masked_fill(combined_mask == 0, float("-inf"))
 
         # Softmax over the last dimension (key_len)
         attention = torch.softmax(energy / (self.embed_size ** (1/2)), dim=3)
@@ -88,13 +92,13 @@ class CausalDecoderBlock(nn.Module):
         self.norm3 = nn.LayerNorm(embed_size)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, encoder_output, padding_mask, causal_mask):
+    def forward(self, x, encoder_output, src_mask, tgt_mask, causal_mask):
         # Self-Attention with both masks
-        self_attention = self.self_attention(x, x, x, padding_mask, causal_mask)
+        self_attention = self.self_attention(x, x, x, tgt_mask, causal_mask)
         x = self.norm1(x + self.dropout(self_attention))
 
         # Cross-Attention (attends to encoder output)
-        cross_attention = self.cross_attention(encoder_output, x, padding_mask, None)  # No causal mask for cross-attention
+        cross_attention = self.cross_attention(encoder_output, encoder_output, x, src_mask, None)  # No causal mask for cross-attention
         x = self.norm2(x + self.dropout(cross_attention))
 
         # Feed-Forward
@@ -129,7 +133,7 @@ class DecoderWithMBartEmbeddings(nn.Module):
         self.fc_out = nn.Linear(self.embed_size, trg_vocab_size)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, encoder_output, src_mask, trg_mask):
+    def forward(self, x, encoder_output, tgt_mask, src_mask):
         """
         Forward pass for the decoder.
         
@@ -149,9 +153,11 @@ class DecoderWithMBartEmbeddings(nn.Module):
         positions = torch.arange(0, seq_length).expand(N, seq_length).to(self.device)
         x = self.dropout(mbart_embeddings + self.position_embedding(positions))
 
+        causal_mask = (torch.triu(torch.ones(seq_length, seq_length), 1) == 0.0)
+        causal_mask = causal_mask.to(self.device)
         # Pass through decoder layers
         for layer in self.layers:
-            x = layer(x, encoder_output, src_mask, trg_mask)
+            x = layer(x, encoder_output, src_mask, tgt_mask, causal_mask)
 
         # Final output projection
         out = self.fc_out(x)
