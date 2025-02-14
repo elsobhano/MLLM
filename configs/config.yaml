@@ -14,7 +14,7 @@ model:
 training:
     wandb: disabled # online or disabled
     scale_embedding: False
-    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-02-10_12-32-07/best-epoch=000-val_total_loss=1.361.ckpt
+    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-02-14_12-15-08/best-epoch=009-val_total_loss=1.395.ckpt
     ckpt_path_landa=0.5: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-01-21_01-22-53/best-epoch=085-val_loss=0.000.ckpt
     ckpt_path_old: /home/sobhan/Documents/Code/MLLM/outputs/run_2024-12-29_18-57-45/best-epoch=010-val_loss=0.605.ckpt
     ckpt_path_shit_result_multi_stage: /home/sobhan/Documents/Code/MLLM/ckpts/best-epoch=089-val_loss=3.722-val_bleu=14.258.ckpt

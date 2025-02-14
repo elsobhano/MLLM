@@ -353,6 +353,7 @@ class FeatureExtracter(nn.Module):
         self.conv_2d = dino(dino_path) # InceptionI3d()
         self.conv_1d = Transformer(d_model=512, num_heads=8, layers=[2,2], d_llm=512)
         self.mapper_1 = nn.Linear(512, 1024)
+        self.mapper_1_ac_fn= nn.GELU() 
         self.mapper_2 = nn.Linear(1024, 512)
         if frozen:
             for param in self.conv_2d.parameters():
@@ -366,11 +367,13 @@ class FeatureExtracter(nn.Module):
         # src shape: (all_frames_in_batch, 3, 224, 224)
         src, mask = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
         src, mask = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=512)
-        desc_1 = self.mapper_1(src) #(batch_size, new_seq_len, new_dim=1024)
-        desc_2 = self.mapper_2(desc_1) #(batch_size, new_seq_len, new_dim=512)
+        mapped_src = src.detach().clone()
+        desc_1 = self.mapper_1(mapped_src) #(batch_size, new_seq_len, new_dim=1024)
+        desc_1_activated = self.mapper_1_ac_fn(desc_1)
+        desc_2 = self.mapper_2(desc_1_activated) #(batch_size, new_seq_len, new_dim=512)
         src = torch.cat([src, desc_2], dim=-1) #(batch_size, new_seq_len, new_dim=1024)
 
-        return src, mask, desc_1
+        return src, mask, desc_1_activated
 
 class TextCLIP(nn.Module):
     def __init__(self, config=None, inplanes=1024, planes=1024, head_type='identy'):
@@ -396,7 +399,7 @@ class ImageCLIP(nn.Module):
             r=16,                          # Rank of the update matrices
             lora_alpha=32,                 # LoRA scaling factor
             lora_dropout=0.1,               # Dropout probability
-            target_modules=["q_proj", "v_proj", "out_proj"]
+            target_modules=["q_proj", "k_proj" ,"v_proj", "out_proj"]
         )
 
         self.trans_encoder = get_peft_model(trans_encoder, lora_config)
@@ -408,16 +411,16 @@ class ImageCLIP(nn.Module):
                 param.requires_grad = True
         param_after_lora = sum(p.numel() for p in self.trans_encoder.parameters() if p.requires_grad)
     
-        self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
+        # self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
 
     def forward(self, src_input):
         x, attention_mask, img_to_desc = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         # attention_mask = src_input['attention_mask']
 
-        B, N, C = x.shape
-        cls_token = self.cls_token.repeat(B, 1, 1)
-        x = torch.cat((cls_token, x), dim=1)
-        attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
+        # B, N, C = x.shape
+        # cls_token = self.cls_token.repeat(B, 1, 1)
+        # x = torch.cat((cls_token, x), dim=1)
+        # attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
 
         outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
         last_hidden_state = outs['last_hidden_state']
@@ -546,7 +549,7 @@ class gloss_free_model(nn.Module):
             r=16,                          # Rank of the update matrices
             lora_alpha=32,                 # LoRA scaling factor
             lora_dropout=0.1,               # Dropout probability
-            target_modules=["q_proj", "v_proj", "out_proj"]
+            target_modules=["q_proj", "k_proj" ,"v_proj", "out_proj"]
         )
         self.mbart = get_peft_model(self.mbart, lora_config)
         for param in self.mbart.parameters():
