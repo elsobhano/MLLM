@@ -353,7 +353,8 @@ class FeatureExtracter(nn.Module):
         self.conv_2d = dino(dino_path) # InceptionI3d()
         self.conv_1d = Transformer(d_model=512, num_heads=8, layers=[2,2], d_llm=512)
         self.mapper_1 = nn.Linear(512, 1024)
-        self.mapper_1_ac_fn= nn.GELU() 
+        self.mapper_1_ac_fn= nn.GELU()
+        self.mapper_1_drop = nn.Dropout(0.1)
         self.mapper_2 = nn.Linear(1024, 512)
         if frozen:
             for param in self.conv_2d.parameters():
@@ -367,13 +368,13 @@ class FeatureExtracter(nn.Module):
         # src shape: (all_frames_in_batch, 3, 224, 224)
         src, mask = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
         src, mask = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=512)
-        mapped_src = src.detach().clone()
-        desc_1 = self.mapper_1(mapped_src) #(batch_size, new_seq_len, new_dim=1024)
+        desc_1 = self.mapper_1(src) #(batch_size, new_seq_len, new_dim=1024)
         desc_1_activated = self.mapper_1_ac_fn(desc_1)
-        desc_2 = self.mapper_2(desc_1_activated) #(batch_size, new_seq_len, new_dim=512)
+        desc_1_dropped = self.mapper_1_drop(desc_1_activated)
+        desc_2 = self.mapper_2(desc_1_dropped) #(batch_size, new_seq_len, new_dim=512)
         src = torch.cat([src, desc_2], dim=-1) #(batch_size, new_seq_len, new_dim=1024)
 
-        return src, mask, desc_1_activated
+        return src, mask, desc_1_dropped
 
 class TextCLIP(nn.Module):
     def __init__(self, config=None, inplanes=1024, planes=1024, head_type='identy'):
@@ -398,8 +399,9 @@ class ImageCLIP(nn.Module):
             inference_mode=False,          # Enable training
             r=16,                          # Rank of the update matrices
             lora_alpha=32,                 # LoRA scaling factor
-            lora_dropout=0.1,               # Dropout probability
-            target_modules=["q_proj", "k_proj" ,"v_proj", "out_proj"]
+            lora_dropout=0.1,
+            target_modules=["q_proj", "v_proj"],
+            # target_modules=["q_proj", "k_proj" ,"v_proj", "out_proj"]
         )
 
         self.trans_encoder = get_peft_model(trans_encoder, lora_config)
@@ -429,6 +431,79 @@ class ImageCLIP(nn.Module):
         img_to_desc = img_to_desc.mean(dim=1)
         
         return img_logits, img_to_desc
+
+class Desc_Clip(nn.Module):
+    def __init__(self, config, inplanes=1024, planes=1024, head_type='linear') :
+        super(Desc_Clip, self).__init__()
+        self.config = config
+        self.model =  FeatureExtracter(dino_path=config['model']['dino'])
+        
+        trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
+        lora_config = LoraConfig(
+            inference_mode=False,          # Enable training
+            r=16,                          # Rank of the update matrices
+            lora_alpha=32,                 # LoRA scaling factor
+            lora_dropout=0.1,
+            target_modules=["q_proj", "v_proj"],
+            # target_modules=["q_proj", "k_proj" ,"v_proj", "out_proj"]
+        )
+
+        self.trans_encoder = get_peft_model(trans_encoder, lora_config)
+        for param in self.trans_encoder.parameters():
+            param.requires_grad = False
+        # Only unfreeze LoRA parameters
+        for name, param in self.trans_encoder.named_parameters():
+            if "lora" in name:
+                param.requires_grad = True
+        param_after_lora = sum(p.numel() for p in self.trans_encoder.parameters() if p.requires_grad)
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        # self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
+    def compute_text_similarities_static(self, text_features):
+        # Clone text features and disable gradient tracking
+        text_features_static = text_features.clone().detach()
+        text_features_static.requires_grad = False  # Ensure no gradients are tracked
+
+        # Compute cosine similarities
+        text_sim_matrix = torch.matmul(text_features_static, text_features_static.T)
+        return text_sim_matrix
+
+    def create_soft_target_matrix_with_gradients(self, batch_size, text_sim_matrix, scale_off_diag=0.1):
+        # Create an identity matrix for the diagonal
+        target_matrix = torch.eye(batch_size, device=text_sim_matrix.device, requires_grad=False)
+        # Add off-diagonal text similarities
+        off_diag_matrix = scale_off_diag * text_sim_matrix * (1 - torch.eye(batch_size, device=text_sim_matrix.device, requires_grad=False))
+        target_matrix += off_diag_matrix
+        return target_matrix
+
+    def forward(self, src_input, desc_feats):
+        x, attention_mask = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
+        # attention_mask = src_input['attention_mask']
+
+        # B, N, C = x.shape
+        # cls_token = self.cls_token.repeat(B, 1, 1)
+        # x = torch.cat((cls_token, x), dim=1)
+        # attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
+
+        outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
+        last_hidden_state = outs['last_hidden_state']
+        img_to_desc = last_hidden_state.mean(dim=1)
+        
+        desc_feats = desc_feats / desc_feats.norm(dim=-1, keepdim=True)
+        img_to_desc = img_to_desc / img_to_desc.norm(dim=-1, keepdim=True)
+        
+        desc_sim_matrix = self.compute_text_similarities_static(desc_feats)
+        # cosine similarity as logits
+        logit_scale = self.logit_scale.exp()
+        logits_per_image = logit_scale * img_to_desc @ desc_feats.t()
+        logits_per_text = logit_scale * desc_feats @ img_to_desc.t()
+        
+        ground_truth_desc = self.create_soft_target_matrix_with_gradients(
+            batch_size=logits_per_image.shape[0],
+            text_sim_matrix=desc_sim_matrix,
+            scale_off_diag=0.0,
+        )
+        
+        return logits_per_image, logits_per_text, ground_truth_desc
 
 class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
@@ -548,8 +623,9 @@ class gloss_free_model(nn.Module):
             inference_mode=False,          # Enable training
             r=16,                          # Rank of the update matrices
             lora_alpha=32,                 # LoRA scaling factor
-            lora_dropout=0.1,               # Dropout probability
-            target_modules=["q_proj", "k_proj" ,"v_proj", "out_proj"]
+            lora_dropout=0.1,
+            target_modules=["q_proj", "v_proj"], # Dropout probability
+            # target_modules=["q_proj", "k_proj" ,"v_proj", "out_proj"]
         )
         self.mbart = get_peft_model(self.mbart, lora_config)
         for param in self.mbart.parameters():

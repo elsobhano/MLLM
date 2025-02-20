@@ -1,6 +1,6 @@
 import torch
 import torch.backends.cudnn as cudnn
-from models.Pretrain_Model import PreTrainModel
+from models.Pretrain_desc import PreTrainModel
 
 from models.utils import manage_directory
 from dataset.slt_dataset import DataModule
@@ -19,7 +19,7 @@ torch.set_float32_matmul_precision("medium")
 def get_args_parser():
     parser = argparse.ArgumentParser('CLIP', add_help=False)
     
-    parser.add_argument('--epochs', default=100, type=int, metavar='N', help='number of total epochs to run')
+    parser.add_argument('--epochs', default=10, type=int, metavar='N', help='number of total epochs to run')
     parser.add_argument('--num_gpus', default=1, type=int, metavar='N', help='number of gpus per node')
     parser.add_argument('--eval_freq', default=10, type=int, metavar='N', 
                         help='The frequency of metric evaluation, e.g Bleu score')
@@ -39,7 +39,7 @@ def get_args_parser():
     parser.add_argument('--data_config', type=str, default='configs/config.yaml',
                         help='Path to the data config file.')  
     parser.add_argument('--num_workers', type=int, default=1, help='Number of workers.')
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
+    parser.add_argument('--batch_size', type=int, default=2, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
     
     parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
