@@ -210,7 +210,7 @@ class PG_Loss(nn.Module):
             for t_i in t:
                 gloss_targets[i, t_i] = 1.0
 
-        loss = self.bce_loss_fn(torch.clamp(src, 1e-8, 1 - 1e-8), gloss_targets)
-        # loss = self.bce_loss_fn(src, gloss_targets)
+        # loss = self.bce_loss_fn(torch.clamp(src, 1e-8, 1 - 1e-8), gloss_targets)
+        loss = self.bce_loss_fn(src, gloss_targets)
 
         return loss.mean()

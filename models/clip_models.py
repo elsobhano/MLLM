@@ -379,25 +379,56 @@ class TextCLIP(nn.Module):
         txt_logits = txt_logits.mean(dim=1)
         return txt_logits
 
+from transformers import AutoModel
+# Define Multi-Label Classifier for Feature Inputs
+class FeatureClassifier(nn.Module):
+    def __init__(self, MODEL_NAME, input_dim, num_labels):
+        super().__init__()
+        self.base_model = AutoModel.from_pretrained(MODEL_NAME)
+        # LoRA Configuration
+        lora_config = LoraConfig(
+            r=8, lora_alpha=16, lora_dropout=0.1, bias="none", 
+            target_modules=["q_lin", "v_lin"],
+        )
+        
+        # Apply LoRA
+        self.base_model = get_peft_model(self.base_model, lora_config)
+        for name, param in self.base_model.named_parameters():
+            if "lora" in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+        self.proj = nn.Linear(input_dim, self.base_model.config.hidden_size)  # Project features
+        self.classifier = nn.Linear(self.base_model.config.hidden_size, num_labels)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, features):
+        projected_features = self.proj(features)  # Ensure features match transformer hidden size
+        outputs = self.base_model(inputs_embeds=projected_features)  # Add sequence dim
+        cls_embedding = outputs.last_hidden_state[:, 0, :]  # Extract [CLS] token
+        logits = self.classifier(cls_embedding)
+        return cls_embedding, self.sigmoid(logits)
+
 class ImageCLIP(nn.Module):
     def __init__(self, config, inplanes=1024, planes=1024, head_type='linear') :
         super(ImageCLIP, self).__init__()
         self.config = config
         self.model =  FeatureExtracter(dino_path=config['model']['dino'])
-        post_params = {
-        "in_dim": 1024,
-        "hidden_dim": 300,
-        "num_classes": 2300,
-        "dropout": 0.2,
-        "class_temperature": 0.1,
-        "time_temperature": 0.1,
-        "dynamic_time_temperatures": False,
-        "dynamic_class_temperatures": False,
-        "emb_lang": "de",
-        "emb_pkl_dir": f"data/processed_words.phx_pkl",
-        "trainable_emb": True,
-    }
-        self.head_model = HeadModel(**post_params)
+    #     post_params = {
+    #     "in_dim": 1024,
+    #     "hidden_dim": 300,
+    #     "num_classes": 2300,
+    #     "dropout": 0.2,
+    #     "class_temperature": 0.1,
+    #     "time_temperature": 0.1,
+    #     "dynamic_time_temperatures": False,
+    #     "dynamic_class_temperatures": False,
+    #     "emb_lang": "de",
+    #     "emb_pkl_dir": f"data/processed_words.phx_pkl",
+    #     "trainable_emb": True,
+    # }
+        # self.head_model = HeadModel(**post_params)
+        self.head_model = FeatureClassifier(config['model']['classifier'], inplanes, 2330)
         # self.head_model = nn.Identity()
 
         trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
@@ -418,22 +449,23 @@ class ImageCLIP(nn.Module):
                 param.requires_grad = True
         param_after_lora = sum(p.numel() for p in self.trans_encoder.parameters() if p.requires_grad)
     
-        self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
+        # self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
 
     def forward(self, src_input):
         x, attention_mask = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         # attention_mask = src_input['attention_mask']
-        psp_logits = self.head_model(x, attention_mask)['logits']
+        _, psp_sigmoid = self.head_model(x)
 
-        B, N, C = x.shape
-        cls_token = self.cls_token.repeat(B, 1, 1)
-        x = torch.cat((cls_token, x), dim=1)
-        attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
+        # B, N, C = x.shape
+        # cls_token = self.cls_token.repeat(B, 1, 1)
+        # x = torch.cat((cls_token, x), dim=1)
+        # attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
 
         outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
         last_hidden_state = outs['last_hidden_state']
         img_logits = last_hidden_state.mean(dim=1)
-        return img_logits, psp_logits
+        return img_logits, psp_sigmoid
+    
 
 class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
@@ -465,7 +497,7 @@ class SLRCLIP(nn.Module):
         return target_matrix
 
     def forward(self, src_input, tgt_input):
-        image_features, psp_logits = self.model_images(src_input)
+        image_features, psp_sigmoid = self.model_images(src_input)
         text_features = self.model_txt(tgt_input)
 
         # normalized features
@@ -484,7 +516,7 @@ class SLRCLIP(nn.Module):
             text_sim_matrix=text_sim_matrix,
             scale_off_diag=0.0,
         )
-        return logits_per_image, logits_per_text, ground_truth, psp_logits
+        return logits_per_image, logits_per_text, ground_truth, psp_sigmoid
 
 def config_decoder(config):
     from transformers import AutoConfig
@@ -533,6 +565,9 @@ class gloss_free_model(nn.Module):
         self.args = args
 
         self.backbone = FeatureExtracter(frozen=False, dino_path=self.config['model']['dino'])
+        self.head_model = FeatureClassifier(config['model']['classifier'], embed_dim, 2330)
+        self.pg_to_embed = nn.Linear(768, 1024)
+        
         # self.mbart = MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder'])
         self.mbart = config_decoder(config)
 
@@ -565,6 +600,11 @@ class gloss_free_model(nn.Module):
 
         inputs_embeds = self.sign_emb(frames_feature)
         inputs_embeds = self.embed_scale * inputs_embeds
+        psp_embedding, _ = self.head_model(inputs_embeds)
+        psp_embedding = self.pg_to_embed(psp_embedding)
+        
+        inputs_embeds = torch.cat((psp_embedding.unsqueeze(1), inputs_embeds), dim=1)
+        attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
 
         return inputs_embeds, attention_mask
 

@@ -40,11 +40,11 @@ class PreTrainModel(pl.LightningModule):
 
     def training_step(self, input_batch, batch_idx):
         batch, psp_ground_truth = input_batch[:-1], input_batch[-1]
-        logits_per_image, logits_per_text, clip_ground_truth, psp_logits = self(batch)
+        logits_per_image, logits_per_text, clip_ground_truth, psp_sigmoid = self(batch)
         loss_imgs = self.loss_img(logits_per_image, clip_ground_truth)
         loss_texts = self.loss_txt(logits_per_text, clip_ground_truth)
         train_clip_loss = (loss_imgs + loss_texts)/2.0
-        train_psp_loss = self.loss_pg(psp_logits, psp_ground_truth)
+        train_psp_loss = self.loss_pg(psp_sigmoid, psp_ground_truth)
         train_total_loss = train_clip_loss + self.landa*train_psp_loss
         
         self.log("train_clip_loss", train_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)

@@ -19,7 +19,7 @@ torch.set_float32_matmul_precision("medium")
 def get_args_parser():
     parser = argparse.ArgumentParser('CLIP', add_help=False)
     
-    parser.add_argument('--epochs', default=100, type=int, metavar='N', help='number of total epochs to run')
+    parser.add_argument('--epochs', default=10, type=int, metavar='N', help='number of total epochs to run')
     parser.add_argument('--num_gpus', default=1, type=int, metavar='N', help='number of gpus per node')
     parser.add_argument('--eval_freq', default=10, type=int, metavar='N', 
                         help='The frequency of metric evaluation, e.g Bleu score')
@@ -103,7 +103,6 @@ def main(args):
                 lr=args.lr, 
                 )
     print(sum(p.numel() for p in model.parameters()))
-    exit(0)
     tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'])
 
     data_module = DataModule(

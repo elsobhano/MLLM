@@ -42,7 +42,7 @@ def get_args_parser():
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
     parser.add_argument('--run_ver', type=int, default=0, help='Data version.')
     
-    parser.add_argument('--logger', type=str, default='wandb', help='Logger type.')
+    parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
     parser.add_argument('--output_dir', type=str, default="finetune_new", help='Output directory.')
     parser.add_argument('--log_dir', type=str, default="finetune_new", help='Output directory.')
@@ -148,7 +148,6 @@ def main(args):
                 eval_freq=args.eval_freq,
                 csv_dire=args.save_csv)
     print(sum(p.numel() for p in model.parameters() if p.requires_grad))
-    exit(0)
 
     tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
     data_module = DataModule(
@@ -161,7 +160,7 @@ def main(args):
                 data_ver=args.data_ver)
 
     trainer = pl.Trainer(
-        strategy="ddp",
+        strategy="ddp_find_unused_parameters_true",
         sync_batchnorm=True,
         logger=logger,
         num_sanity_val_steps=0,
