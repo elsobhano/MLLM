@@ -430,7 +430,7 @@ class ImageCLIP(nn.Module):
         # self.head_model = HeadModel(**post_params)
         self.head_model = FeatureClassifier(config['model']['classifier'], inplanes, 2330)
         # self.head_model = nn.Identity()
-
+        self.pg_to_embed = nn.Linear(768, 1024)
         trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
         lora_config = LoraConfig(
             inference_mode=False,          # Enable training
@@ -454,12 +454,13 @@ class ImageCLIP(nn.Module):
     def forward(self, src_input):
         x, attention_mask = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         # attention_mask = src_input['attention_mask']
-        _, psp_sigmoid = self.head_model(x)
+        cls_token, psp_sigmoid = self.head_model(x)
+        cls_token = self.pg_to_embed(cls_token)
 
         # B, N, C = x.shape
         # cls_token = self.cls_token.repeat(B, 1, 1)
-        # x = torch.cat((cls_token, x), dim=1)
-        # attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
+        x = torch.cat((cls_token.unsqueeze(1), x), dim=1)
+        attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
 
         outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
         last_hidden_state = outs['last_hidden_state']

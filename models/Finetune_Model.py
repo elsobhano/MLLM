@@ -55,7 +55,9 @@ class FineTuneModel(pl.LightningModule):
             if 'head_model' in k:
                 k = '.'.join(k.split('.')[2:])
                 new_state_dict[k] = v
-
+            if 'pg_to_embed' in k:
+                k = '.'.join(k.split('.')[2:])
+                new_state_dict[k] = v
         ret = self.model.load_state_dict(new_state_dict, strict=False)
         print('Missing keys: \n', '\n'.join(ret.missing_keys))
         print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
