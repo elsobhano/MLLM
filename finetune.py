@@ -29,7 +29,7 @@ def get_args_parser():
     parser.add_argument('--tokenizer_path', type=str, default="pretrain_models/MBart_trimmed",
                         help='Path to the MBart tokenizer.')
     parser.add_argument('--encoder_ckpt', type=str, default=None, help='Path to the encoder checkpoint.')
-    parser.add_argument('--model_ckpt', type=str, default='pretrain_new/run_2024-12-07_14-22-28/best-epoch=050-val_loss=0.921.ckpt', help='Path to the model checkpoint.')
+    parser.add_argument('--model_ckpt', type=str, default=None, help='Path to the model checkpoint.')
     ##################Data Params##########################################################
     parser.add_argument('--text_path', type=str, default="data/labels", 
                         help='Path to the text data.')
@@ -112,8 +112,10 @@ def main(args):
     args.log_dir = config['save']['output']
     args.save_csv = config['save']['csv']
     args.save_csv = args.save_csv.split("/")[0] + str(args.run_ver) + "/"
-    args.model_ckpt = config['training']['ckpt_path']
-
+    if args.model_ckpt is None:
+        args.model_ckpt = config['training']['ckpt_path']
+    print(args.model_ckpt)
+    exit()
     # set logger
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if args.logger == 'wandb':

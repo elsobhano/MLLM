@@ -9,9 +9,9 @@ class PreTrainModel(pl.LightningModule):
     def __init__(self,
                 config="configs/config.yaml",
                 lr=3e-4,
+                landa=1.0,
                 ):
         super().__init__()
-        self.save_hyperparameters()
         #################Load the Config file####################
         with open(config, 'r') as file:
             self.config = yaml.safe_load(file)
@@ -26,7 +26,8 @@ class PreTrainModel(pl.LightningModule):
         self.loss_img_desc = criterion_desc
         self.loss_txt_desc = criterion_desc
         ######################Prompts#######################
-        self.landa = 0.5
+        self.landa = landa
+        self.save_hyperparameters()
     def forward(self, samples):
         src_input, tgt_input, desc_feats = samples
         return self.model(src_input, tgt_input, desc_feats)

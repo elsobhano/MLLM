@@ -19,7 +19,7 @@ torch.set_float32_matmul_precision("medium")
 def get_args_parser():
     parser = argparse.ArgumentParser('CLIP', add_help=False)
     
-    parser.add_argument('--epochs', default=100, type=int, metavar='N', help='number of total epochs to run')
+    parser.add_argument('--epochs', default=2, type=int, metavar='N', help='number of total epochs to run')
     parser.add_argument('--num_gpus', default=1, type=int, metavar='N', help='number of gpus per node')
     parser.add_argument('--eval_freq', default=10, type=int, metavar='N', 
                         help='The frequency of metric evaluation, e.g Bleu score')
@@ -41,6 +41,7 @@ def get_args_parser():
     parser.add_argument('--num_workers', type=int, default=1, help='Number of workers.')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
+    parser.add_argument('--landa', type=float, default=1.0, help='Data version.')
     
     parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
@@ -82,7 +83,7 @@ def main(args):
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     
-    dirpath = f'{args.output_dir}/run_{current_time}'
+    dirpath = f'{args.output_dir}/run_{current_time}_landa_{args.landa}'
     print("Current Time = {}".format(current_time)) 
     
     # set callbacks
@@ -100,7 +101,8 @@ def main(args):
     # manage_directory(args.save_csv)
     model = PreTrainModel(
                 config=args.data_config,
-                lr=args.lr, 
+                lr=args.lr,
+                landa=args.landa,
                 )
     tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'])
 
