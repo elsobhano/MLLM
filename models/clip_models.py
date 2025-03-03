@@ -303,8 +303,8 @@ class Transformer(nn.Module):
                 block_dpr = drop_path_rate * (block_idx + sum(layers[:index])) / (sum(layers) - 1)
                 # Add a transformer block with the calculated drop path rate
                 self.layers.append(TransformerBlock(d_model, num_heads, block_dpr))
-            if index != len(layers) - 1:
-                self.layers.append(Downsampler())
+            # if index != len(layers) - 1:
+            #     self.layers.append(Downsampler())
 
         self.output_proj = nn.Linear(d_model, d_llm)
         self.inits = 'standard'
