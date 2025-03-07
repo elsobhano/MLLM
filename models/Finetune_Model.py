@@ -23,7 +23,10 @@ class FineTuneModel(pl.LightningModule):
                 config="configs/config.yaml",
                 args=None,
                 eval_freq=10,
-                csv_dire=None
+                csv_dire=None,
+                label_smoothing=0.2,
+                num_beams=4,
+                warmup=0.05,
                 ):
         super().__init__()
         self.eval_freq = eval_freq
@@ -32,6 +35,9 @@ class FineTuneModel(pl.LightningModule):
         with open(config, 'r') as file:
             self.config = yaml.safe_load(file)
         self.args = args
+        self.label_smoothing = label_smoothing
+        self.num_beams = num_beams
+        self.warmup = warmup
         ################Set the Sign Encoder####################
         self.model = gloss_free_model(self.config, self.args)
         # for k, v in self.model.named_parameters():
@@ -64,8 +70,8 @@ class FineTuneModel(pl.LightningModule):
         #     if param.requires_grad:
         #         print(f"Unfroze layer: {name}")
         #################Initialize the tokenizer####################
-        self.tokenizer = MBartTokenizer.from_pretrained(self.config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
-        lang_code_to_id = self.tokenizer.lang_code_to_id['de_DE']
+        self.tokenizer = MBartTokenizer.from_pretrained(self.config['model']['tokenizer'], src_lang = 'zh_CN', tgt_lang = 'zh_CN')
+        lang_code_to_id = self.tokenizer.lang_code_to_id['zh_CN']
         self.end_sym = ' .'
         self.max_txt_len = 64
         #################Set the Projection####################
@@ -74,7 +80,7 @@ class FineTuneModel(pl.LightningModule):
         #################Set the Optimizer####################
         self.lr = self.args.lr
         
-        self.criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX, label_smoothing=0.2)
+        self.criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX, label_smoothing=self.label_smoothing)
 
         self.csv_dire = csv_dire
         
@@ -131,10 +137,10 @@ class FineTuneModel(pl.LightningModule):
             hypotheses_teacher = []
             tgt_refs = []
             for idx in range(self.trainer.world_size):
-                df = pd.read_csv(self.csv_dire + f"val_outputs_{self.current_epoch+1}_{idx}.csv", sep='|')
-                hypotheses.extend([str(item) + ' .' for item in df['hypotheses'].tolist()]) # df['hypotheses'].tolist()
-                hypotheses_teacher.extend([str(item) + ' .' for item in df['hypotheses_teacher'].tolist()]) # df['hypotheses_teacher'].tolist()
-                tgt_refs.extend([str(item) + ' .' for item in df['targets'].tolist()]) # df['targets'].tolist()
+                df = pd.read_csv(self.csv_dire + f"val_outputs_{self.current_epoch+1}_{idx}.csv", sep='|', encoding="utf-8")
+                hypotheses.extend([" ".join(list(str(item))) for item in df['hypotheses'].tolist()]) # df['hypotheses'].tolist()
+                hypotheses_teacher.extend([" ".join(list(str(item))) for item in df['hypotheses_teacher'].tolist()]) # [str(item) for item in df['hypotheses_teacher'].tolist()]) # df['hypotheses_teacher'].tolist()
+                tgt_refs.extend([" ".join(list(str(item))) for item in df['targets'].tolist()]) # df['targets'].tolist()
             
             if isinstance(self.logger, TensorBoardLogger):
                 self.logger.experiment.add_text("hypotheses_teacher", "\n".join(hypotheses_teacher[:5]), self.current_epoch)
@@ -180,8 +186,8 @@ class FineTuneModel(pl.LightningModule):
 
         self.test_decoded = self.generate(src_input)
         self.test_step_outputs = self.tokenizer.batch_decode(tgt_input['input_ids'], skip_special_tokens=True)
-        tgt_refs = [str(item) + ' .' for item in self.test_step_outputs]
-        hypotheses = [str(item) + ' .' for item in self.test_decoded]
+        tgt_refs = [" ".join(list(str(item))) for item in self.test_step_outputs]
+        hypotheses = [" ".join(list(str(item))) for item in self.test_decoded]
         new_data = {"hypotheses": hypotheses, "targets": tgt_refs}
         file_path = self.csv_dire + f"test_outputs_{self.trainer.global_rank}.csv"
         self.add_data_to_csv(file_path, new_data, columns=["hypotheses", "targets"])
@@ -192,7 +198,7 @@ class FineTuneModel(pl.LightningModule):
         hypotheses = []
         tgt_refs = []
         for idx in range(self.trainer.world_size):
-            df = pd.read_csv(self.csv_dire + f"test_outputs_{idx}.csv", sep='|')
+            df = pd.read_csv(self.csv_dire + f"test_outputs_{idx}.csv", sep='|', encoding="utf-8")
             hypotheses.extend(df['hypotheses'].tolist())
             tgt_refs.extend(df['targets'].tolist())
             
@@ -211,7 +217,7 @@ class FineTuneModel(pl.LightningModule):
         return generated_texts
 
     def generate(self, src_input):
-        max_new_tokens, num_beams, decoder_start_token_id  = 150, 4, self.tokenizer.lang_code_to_id['de_DE']
+        max_new_tokens, num_beams, decoder_start_token_id  = 150, self.num_beams, self.tokenizer.lang_code_to_id['zh_CN']
         out = self.model.generate(
                             src_input,
                             max_new_tokens, 
@@ -255,7 +261,7 @@ class FineTuneModel(pl.LightningModule):
                 optimizer,
                 max_lr=self.lr,
                 total_steps=self.trainer.estimated_stepping_batches,
-                pct_start=0.05,  # 5% of total steps for warmup
+                pct_start=self.warmup,  # 5% of total steps for warmup
                 anneal_strategy='cos'
             ),
             "interval": "step",
@@ -294,8 +300,8 @@ class FineTuneModel(pl.LightningModule):
 
         # Write or append the data
         if file_exists:
-            df.to_csv(file_path, mode='a', index=False, header=False, sep='|')  # Append without header
+            df.to_csv(file_path, mode='a', index=False, header=False, sep='|', encoding="utf-8")  # Append without header
             print(f"Data appended to {file_path}.")
         else:
-            df.to_csv(file_path, mode='w', index=False, header=True, sep='|')  # Write with header
+            df.to_csv(file_path, mode='w', index=False, header=True, sep='|', encoding="utf-8")  # Write with header
             print(f"New file created with data: {file_path}.")

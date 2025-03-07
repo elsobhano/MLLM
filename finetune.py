@@ -35,12 +35,16 @@ def get_args_parser():
                         help='Path to the text data.')
     parser.add_argument('--qa_csv_path', type=str, default=None,
                         help='Path to the csv file.')
-    parser.add_argument('--data_config', type=str, default='configs/config.yaml',
-                        help='Path to the data config file.')  
+    parser.add_argument('--data_config', type=str, default='configs/csldaily-config.yaml',
+                        help='Path to the data config file.')
+    
+    parser.add_argument('--label_smoothing', type=float, default=0.2)
+    parser.add_argument('--num_beams', type=int, default=4)
     parser.add_argument('--num_workers', type=int, default=10, help='Number of workers.')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
     parser.add_argument('--run_ver', type=int, default=0, help='Data version.')
+    parser.add_argument('--warmup', type=float, default=0.05, help='Warmup')
     
     parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
@@ -114,8 +118,7 @@ def main(args):
     args.save_csv = args.save_csv.split("/")[0] + str(args.run_ver) + "/"
     if args.model_ckpt is None:
         args.model_ckpt = config['training']['ckpt_path']
-    print(args.model_ckpt)
-    exit()
+    print(f'Loaded checkpoint is : {args.model_ckpt}')
     # set logger
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if args.logger == 'wandb':
@@ -146,13 +149,16 @@ def main(args):
     manage_directory(args.save_csv)
     model = FineTuneModel(
                 config=args.data_config,
-                args=args, 
+                args=args,
                 eval_freq=args.eval_freq,
-                csv_dire=args.save_csv)
+                csv_dire=args.save_csv,
+                label_smoothing=args.label_smoothing,
+                num_beams=args.num_beams,
+                warmup=args.warmup,)
     # print(sum(p.numel() for p in model.parameters() if p.requires_grad))
     
 
-    tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
+    tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'], src_lang = 'zh_CN', tgt_lang = 'zh_CN')
     data_module = DataModule(
                 root_text_path=args.text_path, 
                 data_config=args.data_config,

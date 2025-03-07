@@ -8,7 +8,7 @@ from dataset.utils import load_dataset_file
 
 import fasttext.util
 
-language_source = "de_dep_news_trf"
+language_source = "zh_CNp_news_trf"
 
 def get_parts_of_speech(sentence):
     doc = nlp(sentence)

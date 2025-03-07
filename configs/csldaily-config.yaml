@@ -1,0 +1,18 @@
+data:
+    lmdb_path: /home/sobhan/Documents/Datasets/csldaily/sentences/lmdbs/csldaily-lmdbs
+    max_length: 300
+    labels: /home/sobhan/Documents/Code/MLLM/data/csldaily/labels
+    desc_path: /home/sobhan/Documents/Datasets/csldaily/Desc-Features
+model:
+    tokenizer: /home/sobhan/Documents/Weigths/MBart_trimmed_csldaily
+    transformer: /home/sobhan/Documents/Weigths/MBart_trimmed_csldaily
+    dino: /home/sobhan/Documents/Weigths/dino/tmp.pth
+    embed_dim: 1024
+    sign_proj: False
+training:
+    wandb: disabled # online or disabled
+    scale_embedding: False
+    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-03-07_15-26-01_landa_1.0/best-epoch=006-val_total_loss=1.377.ckpt
+save:
+    output: outputs/
+    csv: csv_outputs/

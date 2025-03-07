@@ -12,7 +12,7 @@ from torchvision import transforms
 import pytorch_lightning as pl
 from transformers import MBartTokenizer
 
-from dataset.utils import load_dataset_file, read_lmdb_folder, data_augmentation
+from dataset.utils import load_dataset_file, read_lmdb_folder, csldaily_read_lmdb_folder, data_augmentation, list_all_keys
 
 import warnings
 
@@ -61,25 +61,33 @@ class S2T_Dataset(Dataset):
         # print(index)
         key = self.list[index]
         sample = self.raw_data[key]
+        # sampele = {'name': 'S000001_P0004_T00', 'gloss': '对不起', 'text': '对不起！', 'length': 33}
         name_sample = sample['name']
         tgt_sample = sample['text']
-        
+        # print(key, sample)
+        # print(name_sample, tgt_sample)
         img_sample = self.load_imgs(name_sample)
-        desc_feature = self.load_desc(name_sample)
         # print(img_sample.shape)
-        return name_sample, img_sample, tgt_sample, desc_feature
+        desc_feature = self.load_desc(name_sample)
+        # print(desc_feature)
+        # print(desc_feature.shape)
+        # print(img_sample.shape)
+        return name_sample, img_sample, tgt_sample, desc_feature.unsqueeze(0)
     
     def load_desc(self, file_name):
-        phase, file_name = file_name.split('/')
-        folder = os.path.join(self.desc_path, phase)
+        # phase, file_name = file_name.split('/')
+        # phase = self.phase
+        # folder = os.path.join(self.desc_path, phase)
         # print(folder, file_name)
-        return torch.from_numpy(read_lmdb_folder(folder, file_name))
+        # print(list_all_keys(self.desc_path, file_name))
+        return torch.from_numpy(read_lmdb_folder(self.desc_path, file_name))
     
     def load_imgs(self, file_name):
-        phase, file_name = file_name.split('/')
-        folder = os.path.join(self.lmdb_path, phase)
+        # phase, file_name = file_name.split('/')
+
+        # folder = os.path.join(self.lmdb_path, phase)
         # print(folder, file_name)
-        images = read_lmdb_folder(folder, file_name)
+        images = csldaily_read_lmdb_folder(self.lmdb_path, file_name)
         len_imgs = len(images)
         
         if len_imgs > self.max_length:
@@ -95,7 +103,7 @@ class S2T_Dataset(Dataset):
         batch_image = []
         for i,img in enumerate(images):
             # print(img.shape)
-            img = np.transpose(img, (1, 2, 0))
+            # img = np.transpose(img, (1, 2, 0))
             # img = np.transpose(img, (0, 1, 2))
             img = Image.fromarray(img)
             batch_image.append(img)
@@ -141,12 +149,13 @@ class S2T_Dataset(Dataset):
         src_input['attention_mask'] = mask
         src_input['name_batch'] = name_batch
         src_input['src_length_batch'] = src_length_batch
+        # print(img_batch.shape, mask.shape,tgt_input['input_ids'].shape, tgt_input['attention_mask'].shape, desc_features_batch.shape)
         
         return src_input, tgt_input, desc_features_batch
     
 class DataModule(pl.LightningDataModule):
     def __init__(
-            self, 
+            self,
             root_text_path,
             qa_csv_path,
             tokenizer,
@@ -169,8 +178,8 @@ class DataModule(pl.LightningDataModule):
         else:
             self.data_config = data_config
         
-        if data_ver != 0:
-            self.data_config['data']['lmdb_path'] = self.data_config['data']['lmdb_path'] + f'-{data_ver}'
+        # if data_ver != 0:
+        #     self.data_config['data']['lmdb_path'] = self.data_config['data']['lmdb_path'] + f'-{data_ver}'
 
         self.resize = resize
         self.input_size = input_size

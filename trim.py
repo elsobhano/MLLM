@@ -23,7 +23,7 @@ for key,value in raw_data.items():
     data.append(sentence)
     # data.append(gloss.lower())
 
-tokenizer = MBartTokenizer.from_pretrained("facebook/mbart-large-cc25", src_lang="de_DE", tgt_lang="de_DE")
+tokenizer = MBartTokenizer.from_pretrained("facebook/mbart-large-cc25", src_lang="zh_CN", tgt_lang="zh_CN")
 
 model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-cc25")
 configuration = model.config
