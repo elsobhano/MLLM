@@ -50,7 +50,7 @@ class dino(nn.Module):
                 "lora_a": 4.0,
                 "rng_init": False,
             },
-            "out_dim": 512,
+            "out_dim": 256,
         }
         self.dino = Model(**dino_params)
 
@@ -348,17 +348,20 @@ def make_head(inplanes, planes, head_type):
         return nn.Identity()
     
 class FeatureExtracter(nn.Module):
-    def __init__(self, frozen=False, dino_path=None):
-        super(FeatureExtracter, self).__init__()
+    def __init__(self, dino_path=None):
+        super().__init__()
         self.conv_2d = dino(dino_path) # InceptionI3d()
+        
+        self.hamer_mapper_1 = nn.Linear(256, 288)
+        self.hamer_mapper_1_ac_fn= nn.GELU()
+        self.hamer_mapper_1_drop = nn.Dropout(0.1)
+        self.hamer_mapper_2 = nn.Linear(288, 256)
+        
         self.conv_1d = Transformer(d_model=512, num_heads=8, layers=[2,2], d_llm=512)
         self.mapper_1 = nn.Linear(512, 1024)
         self.mapper_1_ac_fn= nn.GELU()
         self.mapper_1_drop = nn.Dropout(0.1)
         self.mapper_2 = nn.Linear(1024, 512)
-        if frozen:
-            for param in self.conv_2d.parameters():
-                param.requires_grad = False
 
     def forward(self,
                 src: Tensor,
@@ -367,14 +370,23 @@ class FeatureExtracter(nn.Module):
                 ):
         # src shape: (all_frames_in_batch, 3, 224, 224)
         src, mask = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
+
+        hamer_1 = self.hamer_mapper_1(src)
+        hamer_1_activated = self.hamer_mapper_1_ac_fn(hamer_1)
+        hamer_1_dropped = self.hamer_mapper_1_drop(hamer_1_activated)
+        hamer_2 = self.hamer_mapper_2(hamer_1_dropped)
+        src = torch.cat([src, hamer_2], dim=-1)
+
         src, mask = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=512)
+
         desc_1 = self.mapper_1(src) #(batch_size, new_seq_len, new_dim=1024)
         desc_1_activated = self.mapper_1_ac_fn(desc_1)
         desc_1_dropped = self.mapper_1_drop(desc_1_activated)
         desc_2 = self.mapper_2(desc_1_dropped) #(batch_size, new_seq_len, new_dim=512)
+
         src = torch.cat([src, desc_2], dim=-1) #(batch_size, new_seq_len, new_dim=1024)
 
-        return src, mask, desc_1_dropped
+        return src, mask, hamer_1_dropped, desc_1_dropped
 
 class TextCLIP(nn.Module):
     def __init__(self, config=None, inplanes=1024, planes=1024, head_type='identy'):
@@ -416,7 +428,7 @@ class ImageCLIP(nn.Module):
         # self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
 
     def forward(self, src_input):
-        x, attention_mask, img_to_desc = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
+        x, attention_mask, predicted_hamer , img_to_desc = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         # attention_mask = src_input['attention_mask']
 
         # B, N, C = x.shape
@@ -430,7 +442,7 @@ class ImageCLIP(nn.Module):
         
         img_to_desc = img_to_desc.mean(dim=1)
         
-        return img_logits, img_to_desc
+        return img_logits, img_to_desc, predicted_hamer
 
 class Desc_Clip(nn.Module):
     def __init__(self, config, inplanes=1024, planes=1024, head_type='linear') :
@@ -536,7 +548,7 @@ class SLRCLIP(nn.Module):
         return target_matrix
 
     def forward(self, src_input, tgt_input, desc_feats):
-        image_features, img_to_desc = self.model_images(src_input)
+        image_features, img_to_desc, predicted_hamer = self.model_images(src_input)
         text_features = self.model_txt(tgt_input)
 
         # normalized features
@@ -567,7 +579,7 @@ class SLRCLIP(nn.Module):
             text_sim_matrix=desc_sim_matrix,
             scale_off_diag=0.0,
         )
-        return logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc 
+        return logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc, predicted_hamer
 
 def config_decoder(config):
     from transformers import AutoConfig

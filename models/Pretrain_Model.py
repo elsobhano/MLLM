@@ -9,7 +9,8 @@ class PreTrainModel(pl.LightningModule):
     def __init__(self,
                 config="configs/config.yaml",
                 lr=3e-4,
-                landa=1.0,
+                landa_desc=1.0,
+                landa_hamer=1.0,
                 ):
         super().__init__()
         #################Load the Config file####################
@@ -26,7 +27,8 @@ class PreTrainModel(pl.LightningModule):
         self.loss_img_desc = criterion_desc
         self.loss_txt_desc = criterion_desc
         ######################Prompts#######################
-        self.landa = landa
+        self.landa_desc = landa_desc
+        self.landa_hamer = landa_hamer
         self.save_hyperparameters()
     def forward(self, samples):
         src_input, tgt_input, desc_feats = samples
@@ -38,7 +40,8 @@ class PreTrainModel(pl.LightningModule):
         self.log('learning_rate', lr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def training_step(self, input_batch, batch_idx):
-        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc = self(input_batch)
+        hamer_feats, hamer_mask = input_batch[-2:]
+        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc, predicted_hamer = self(input_batch[:-2])
         
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
@@ -48,16 +51,20 @@ class PreTrainModel(pl.LightningModule):
         loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
         train_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
         
-        train_total_loss = train_clip_loss + self.landa*train_clip_loss_desc
+        train_hamer_loss = self.masked_l2_loss(predicted_hamer, hamer_feats, hamer_mask)
+        
+        train_total_loss = train_clip_loss + self.landa_desc*train_clip_loss_desc + self.landa_hamer*train_hamer_loss
         
         self.log("train_clip_loss", train_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("train_clip_loss_desc", train_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_hamer_loss", train_hamer_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("train_total_loss", train_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         return train_total_loss
 
     def validation_step(self, input_batch, batch_idx):
-        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc = self(input_batch)
+        hamer_feats, hamer_mask = input_batch[-2:]
+        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc, predicted_hamer = self(input_batch[:-2])
         
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
@@ -67,16 +74,20 @@ class PreTrainModel(pl.LightningModule):
         loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
         val_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
         
-        val_total_loss = val_clip_loss + self.landa*val_clip_loss_desc
+        val_hamer_loss = self.masked_l2_loss(predicted_hamer, hamer_feats, hamer_mask)
+        
+        val_total_loss = val_clip_loss + self.landa_desc*val_clip_loss_desc + self.landa_hamer*val_hamer_loss
         
         self.log("val_clip_loss", val_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val_clip_loss_desc", val_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_hamer_loss", val_hamer_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val_total_loss", val_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
         return val_total_loss
     
     def test_step(self, input_batch, batch_idx):
-        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc = self(input_batch)
+        hamer_feats, hamer_mask = input_batch[-2:]
+        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc, predicted_hamer = self(input_batch[:-2])
         
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
@@ -86,10 +97,13 @@ class PreTrainModel(pl.LightningModule):
         loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
         test_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
         
-        test_total_loss = test_clip_loss + self.landa*test_clip_loss_desc
+        test_hamer_loss = self.masked_l2_loss(predicted_hamer, hamer_feats, hamer_mask)
+        
+        test_total_loss = test_clip_loss + self.landa_desc*test_clip_loss_desc + self.landa_hamer*test_hamer_loss
         
         self.log("test_clip_loss", test_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("test_clip_loss_desc", test_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("test_hamer_loss", test_hamer_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("test_total_loss", test_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         
         return test_total_loss
@@ -131,26 +145,25 @@ class PreTrainModel(pl.LightningModule):
             gradient_clip_val=1.0,
             gradient_clip_algorithm="norm",
         )
-        # Implement your own custom logic to clip gradients
-        # You can call `self.clip_gradients` with your settings:
+    def masked_l2_loss(self, pred, target, mask):
+        """
+        Computes the masked L2 loss (Mean Squared Error) between predictions and targets.
+
+        Args:
+            pred (torch.Tensor): Predictions of shape (Batch_size, Sequence_length, dim).
+            target (torch.Tensor): Ground truth of shape (Batch_size, Sequence_length, dim).
+            mask (torch.Tensor): Binary mask of shape (Batch_size, Sequence_length), where 1 indicates valid values and 0 indicates padding.
+
+        Returns:
+            torch.Tensor: Scalar loss value.
+        """
+        B, T, D = pred.shape
+        # Compute squared error
+        squared_norm = torch.norm(pred - target, p=2, dim=-1) ** 2  # Shape: (Batch_size, Sequence_length, dim)
         
-        # total_grad_norm_before = torch.sqrt(
-        #     sum(
-        #         (p.grad.norm(2) ** 2) for p in self.parameters() if p.grad is not None
-        #     )
-        # )
+        masked_loss = squared_norm * mask
         
-        # self.log("grad_norm_before", total_grad_norm_before, prog_bar=True, on_step=True, on_epoch=False)
+        # Compute mean over valid elements
+        loss = masked_loss.sum() / (mask.sum() * D)
         
-        # self.clip_gradients(
-        # optimizer,
-        # gradient_clip_val=1.0,
-        # gradient_clip_algorithm="value",
-        # )
-        # total_grad_norm = torch.sqrt(
-        #     sum(
-        #         (p.grad.norm(2) ** 2) for p in self.parameters() if p.grad is not None
-        #     )
-        # )
-        # Log the gradient norm to the progress bar
-        # self.log("grad_norm_after", total_grad_norm, prog_bar=True, on_step=True, on_epoch=False)
+        return loss

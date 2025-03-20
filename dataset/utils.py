@@ -5,6 +5,7 @@ import random
 import numpy as np
 import gzip
 import pickle
+import lzma
 import lmdb
 import os
 import cv2
@@ -89,3 +90,13 @@ def read_lmdb_folder(lmdb_path, folder_name=None):
         raise
     finally:
         env.close()
+        
+def read_hamer_features(lzma_path, folder_name):
+    
+    lzma_folder = os.path.join(lzma_path, folder_name)
+    lzma_file = os.path.join(lzma_folder, f"{folder_name}.lzma")
+    
+    with lzma.open(lzma_file, "rb") as f:
+        data = pickle.load(f)
+        
+    return data['features']

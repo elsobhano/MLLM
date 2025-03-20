@@ -3,6 +3,7 @@ data:
     max_length: 300
     labels: /home/sobhan/Documents/Code/MLLM/data/labels
     desc_path: /home/sobhan/Documents/Datasets/desc_feat/
+    hamer_path: /home/sobhan/Documents/Datasets/Phoenix2014T_HaMeR_lzma/
 model:
     I3D: /home/sobhan/Documents/Code/PSP/tmp/meinedgs_i3d.pth.tar
     tokenizer: /home/sobhan/Documents/Code/MLLM/MBart_trimmed

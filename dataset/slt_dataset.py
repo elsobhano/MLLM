@@ -12,8 +12,7 @@ from torchvision import transforms
 import pytorch_lightning as pl
 from transformers import MBartTokenizer
 
-from dataset.utils import load_dataset_file, read_lmdb_folder, data_augmentation
-
+from dataset.utils import load_dataset_file, read_lmdb_folder, data_augmentation, read_hamer_features
 import warnings
 
 # Suppress a specific warning by category
@@ -39,6 +38,7 @@ class S2T_Dataset(Dataset):
         self.list = [key for key,value in self.raw_data.items()]
         
         self.desc_path = config['data']['desc_path']
+        self.hamer_path = config['data']['hamer_path']
 
         sometimes = lambda aug: va.Sometimes(0.5, aug) # Used to apply augmentor with 50% probability
         self.seq = va.Sequential([
@@ -65,15 +65,26 @@ class S2T_Dataset(Dataset):
         tgt_sample = sample['text']
         
         img_sample = self.load_imgs(name_sample)
+        hamer_feature = self.load_hamer(name_sample)
         desc_feature = self.load_desc(name_sample)
         # print(img_sample.shape)
-        return name_sample, img_sample, tgt_sample, desc_feature
+        return name_sample, img_sample, tgt_sample, hamer_feature, desc_feature
     
     def load_desc(self, file_name):
         phase, file_name = file_name.split('/')
         folder = os.path.join(self.desc_path, phase)
         # print(folder, file_name)
-        return torch.from_numpy(read_lmdb_folder(folder, file_name))
+        hamer_features = torch.from_numpy(read_lmdb_folder(folder, file_name))
+        if hamer_features.shape[0] > self.max_length:
+            hamer_features = hamer_features[:self.max_length]
+        return hamer_features
+
+    def load_hamer(self, file_name):
+        phase, file_name = file_name.split('/')
+        folder = os.path.join(self.hamer_path, phase)
+        return torch.from_numpy(read_hamer_features(folder, file_name))
+        
+        
     
     def load_imgs(self, file_name):
         phase, file_name = file_name.split('/')
@@ -114,14 +125,16 @@ class S2T_Dataset(Dataset):
         return f'#total {self.phase} set: {len(self.list)}.'
     
     def collate_fn(self, batch):
-        tgt_batch,img_tmp,src_length_batch,name_batch = [],[],[],[]
+        tgt_batch, img_tmp, src_length_batch, name_batch = [],[],[],[]
         desc_features = []
+        hamer_features = []
 
-        for name_sample, img_sample, tgt_sample, desc_feature in batch:
+        for name_sample, img_sample, tgt_sample, hamer_feature, desc_feature in batch:
 
             name_batch.append(name_sample)
             img_tmp.append(img_sample)
             tgt_batch.append(tgt_sample)
+            hamer_features.append(hamer_feature)
             desc_features.append(desc_feature)
 
         max_len = max([len(vid) for vid in img_tmp])
@@ -133,6 +146,9 @@ class S2T_Dataset(Dataset):
         
         img_batch = torch.cat(img_tmp,0)
         desc_features_batch = torch.cat(desc_features,0)
+        hamer_features_batch = pad_sequence(hamer_features, batch_first=True, padding_value=0.0)
+        hamer_mask = pad_sequence([torch.ones(len(f)) for f in hamer_features], batch_first=True, padding_value=0.0)
+
         with self.tokenizer.as_target_tokenizer():
             tgt_input = self.tokenizer(tgt_batch, return_tensors="pt", padding = True, max_length=self.max_words, truncation=True)
 
@@ -142,7 +158,7 @@ class S2T_Dataset(Dataset):
         src_input['name_batch'] = name_batch
         src_input['src_length_batch'] = src_length_batch
         
-        return src_input, tgt_input, desc_features_batch
+        return src_input, tgt_input, desc_features_batch, hamer_features_batch, hamer_mask 
     
 class DataModule(pl.LightningDataModule):
     def __init__(
