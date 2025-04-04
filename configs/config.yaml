@@ -5,17 +5,16 @@ data:
     desc_path: /home/sobhan/Documents/Datasets/desc_feat/
     hamer_path: /home/sobhan/Documents/Datasets/Phoenix2014T_HaMeR_lzma/
 model:
-    I3D: /home/sobhan/Documents/Code/PSP/tmp/meinedgs_i3d.pth.tar
     tokenizer: /home/sobhan/Documents/Code/MLLM/MBart_trimmed
     transformer: /home/sobhan/Documents/Code/MLLM/MBart_trimmed
     resnet: /home/sobhan/Documents/Code/MLLM/ckpts/resnet18.pth
     dino: /home/sobhan/Documents/Code/PSP/tmp/tmp.pth
     embed_dim: 1024
-    sign_proj: True
+    sign_proj: False
 training:
     wandb: disabled # online or disabled
     scale_embedding: False
-    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-02-14_12-15-08/best-epoch=009-val_total_loss=1.395.ckpt
+    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-03-26_17-27-06_landa_desc_1.0_landa_hamer_1.0/best-epoch=001-val_total_loss=1.824.ckpt
     ckpt_path_landa=0.5: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-01-21_01-22-53/best-epoch=085-val_loss=0.000.ckpt
     ckpt_path_old: /home/sobhan/Documents/Code/MLLM/outputs/run_2024-12-29_18-57-45/best-epoch=010-val_loss=0.605.ckpt
     ckpt_path_shit_result_multi_stage: /home/sobhan/Documents/Code/MLLM/ckpts/best-epoch=089-val_loss=3.722-val_bleu=14.258.ckpt

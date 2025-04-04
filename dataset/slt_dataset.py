@@ -216,13 +216,13 @@ class DataModule(pl.LightningDataModule):
             self.test_dataset = S2T_Dataset(path=self.text_test, tokenizer=self.tokenizer, config=self.data_config, resize=self.resize, input_size=self.input_size, phase='test')
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, collate_fn=self.train_dataset.collate_fn)
+        return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, collate_fn=self.train_dataset.collate_fn, pin_memory=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, collate_fn=self.val_dataset.collate_fn)
+        return DataLoader(self.val_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, collate_fn=self.val_dataset.collate_fn, pin_memory=True)
 
     def test_dataloader(self):        
-        return DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, collate_fn=self.test_dataset.collate_fn)
+        return DataLoader(self.test_dataset, batch_size=self.batch_size, num_workers=self.num_workers, shuffle=False, collate_fn=self.test_dataset.collate_fn, pin_memory=True)
 
 
 if __name__ == "__main__":

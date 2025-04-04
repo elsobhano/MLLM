@@ -214,3 +214,24 @@ class PG_Loss(nn.Module):
         # loss = self.bce_loss_fn(src, gloss_targets)
 
         return loss.mean()
+
+class TerminateOnNaNLoss(Callback):
+    def __init__(self, metric="train_loss"):
+        super().__init__()
+        self.nan_loss_count = 0  # Counter for consecutive NaN losses
+        self.metric = metric
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        # Get the latest training loss
+        loss = trainer.callback_metrics.get(self.metric)
+        print(f"Current {self.metric}: {loss}")
+        if loss is None or not loss.isfinite():
+            self.nan_loss_count += 1
+            print(f"Warning: NaN loss detected for {self.nan_loss_count} consecutive epoch(s).")
+        else:
+            self.nan_loss_count = 0  # Reset counter if loss is valid
+
+        # Terminate training if NaN loss occurs for 2 consecutive epochs
+        if self.nan_loss_count >= 2:
+            print("Terminating training due to consecutive NaN losses.")
+            trainer.should_stop = True

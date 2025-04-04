@@ -50,7 +50,7 @@ class dino(nn.Module):
                 "lora_a": 4.0,
                 "rng_init": False,
             },
-            "out_dim": 256,
+            "out_dim": 512,
         }
         self.dino = Model(**dino_params)
 
@@ -138,7 +138,7 @@ class FeedForward(nn.Module):
         super().__init__()
         self.linear1 = nn.Linear(d_model, d_ff)
         self.linear2 = nn.Linear(d_ff, d_model)
-        self.activation = nn.GELU()
+        self.activation = nn.GELU(approximate="tanh")
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
@@ -352,14 +352,19 @@ class FeatureExtracter(nn.Module):
         super().__init__()
         self.conv_2d = dino(dino_path) # InceptionI3d()
         
-        self.hamer_mapper_1 = nn.Linear(256, 288)
-        self.hamer_mapper_1_ac_fn= nn.GELU()
+        self.hamer_mapper_1 = nn.Linear(512, 288)
+        self.hamer_mapper_1_ac_fn= nn.GELU(approximate="tanh")
         self.hamer_mapper_1_drop = nn.Dropout(0.1)
-        self.hamer_mapper_2 = nn.Linear(288, 256)
+        self.hamer_mapper_2 = nn.Linear(288, 512)
+        
+        self.mapper_1_downsample = nn.Sequential(
+                nn.Linear(in_features=1024, out_features=512),
+                nn.GELU(approximate="tanh")
+            )
         
         self.conv_1d = Transformer(d_model=512, num_heads=8, layers=[2,2], d_llm=512)
         self.mapper_1 = nn.Linear(512, 1024)
-        self.mapper_1_ac_fn= nn.GELU()
+        self.mapper_1_ac_fn= nn.GELU(approximate="tanh")
         self.mapper_1_drop = nn.Dropout(0.1)
         self.mapper_2 = nn.Linear(1024, 512)
 
@@ -376,6 +381,8 @@ class FeatureExtracter(nn.Module):
         hamer_1_dropped = self.hamer_mapper_1_drop(hamer_1_activated)
         hamer_2 = self.hamer_mapper_2(hamer_1_dropped)
         src = torch.cat([src, hamer_2], dim=-1)
+        
+        src = self.mapper_1_downsample(src)
 
         src, mask = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=512)
 
@@ -603,7 +610,7 @@ class V_encoder(nn.Module):
         # Replace BatchNorm1d with LayerNorm and ReLU with GELU
         modules = []
         modules.append(nn.LayerNorm(emb_size))  # LayerNorm operates on the last dimension
-        modules.append(nn.GELU())  # Use GELU instead of ReLU
+        modules.append(nn.GELU(approximate="tanh"))  # Use GELU instead of ReLU
         self.bn_ac = nn.Sequential(*modules)
 
         # Initialize weights
@@ -627,7 +634,7 @@ class gloss_free_model(nn.Module):
         self.config = config
         self.args = args
 
-        self.backbone = FeatureExtracter(frozen=False, dino_path=self.config['model']['dino'])
+        self.backbone = FeatureExtracter(dino_path=self.config['model']['dino'])
         # self.mbart = MBartForConditionalGeneration.from_pretrained(config['model']['visual_encoder'])
         self.mbart = config_decoder(config)
 
@@ -656,7 +663,7 @@ class gloss_free_model(nn.Module):
 
     def share_forward(self, src_input):
         
-        frames_feature, attention_mask, _ = self.backbone(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask'])
+        frames_feature, attention_mask, *_ = self.backbone(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask'])
         # attention_mask = src_input['attention_mask']
 
         inputs_embeds = self.sign_emb(frames_feature)

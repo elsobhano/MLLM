@@ -5,6 +5,7 @@ from models.Pretrain_Model import PreTrainModel
 from models.utils import manage_directory
 from dataset.slt_dataset import DataModule
 import pytorch_lightning as pl
+from models.utils import TerminateOnNaNLoss
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from transformers import MBartTokenizer
@@ -96,9 +97,10 @@ def main(args):
     dirpath=dirpath,
     filename="best-{epoch:03d}-{val_total_loss:.3f}",
     )
+    nan_callback = TerminateOnNaNLoss("train_total_loss")
     # monitor_gradient_norm = MonitorGradientNorm()
     early_stop = EarlyStopping("val_loss", patience=args.epochs, mode="min", verbose=True)
-    callbacks = [checkpoint_callback]
+    callbacks = [checkpoint_callback, nan_callback]
     # manage_directory(args.save_csv)
     model = PreTrainModel(
                 config=args.data_config,

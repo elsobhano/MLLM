@@ -3,7 +3,7 @@ import torch.backends.cudnn as cudnn
 from models.Finetune_Model import FineTuneModel
 from collections import OrderedDict
 
-from models.utils import manage_directory, SaveBestModelOnNEpochs
+from models.utils import manage_directory, SaveBestModelOnNEpochs, TerminateOnNaNLoss
 from dataset.slt_dataset import DataModule
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
@@ -38,7 +38,7 @@ def get_args_parser():
     parser.add_argument('--data_config', type=str, default='configs/config.yaml',
                         help='Path to the data config file.')  
     parser.add_argument('--num_workers', type=int, default=10, help='Number of workers.')
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
+    parser.add_argument('--batch_size', type=int, default=2, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
     parser.add_argument('--run_ver', type=int, default=0, help='Data version.')
     
@@ -115,7 +115,6 @@ def main(args):
     if args.model_ckpt is None:
         args.model_ckpt = config['training']['ckpt_path']
     print(args.model_ckpt)
-    exit()
     # set logger
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if args.logger == 'wandb':
@@ -139,10 +138,11 @@ def main(args):
     # )
     checkpoint_callback = SaveBestModelOnNEpochs(
         save_every_n_epochs=args.eval_freq, 
-        monitor="val_bleu", mode="max", 
+        monitor="val_bleu", mode="max",
         dirpath=dirpath)
+    nan_callback = TerminateOnNaNLoss("train_loss")
     early_stop = EarlyStopping("val_loss", patience=args.epochs, mode="min", verbose=True)
-    callbacks = [checkpoint_callback]
+    callbacks = [checkpoint_callback, nan_callback]
     manage_directory(args.save_csv)
     model = FineTuneModel(
                 config=args.data_config,
@@ -150,7 +150,6 @@ def main(args):
                 eval_freq=args.eval_freq,
                 csv_dire=args.save_csv)
     # print(sum(p.numel() for p in model.parameters() if p.requires_grad))
-    
 
     tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'], src_lang = 'de_DE', tgt_lang = 'de_DE')
     data_module = DataModule(
