@@ -37,7 +37,10 @@ def get_args_parser():
     parser.add_argument('--qa_csv_path', type=str, default=None,
                         help='Path to the csv file.')
     parser.add_argument('--data_config', type=str, default='configs/csldaily-config.yaml',
-                        help='Path to the data config file.')  
+                        help='Path to the data config file.')
+    parser.add_argument('--secret_config', type=str, default='configs/secret.yaml',
+                        help='Path to the secret config file.')
+    
     parser.add_argument('--num_workers', type=int, default=10, help='Number of workers.')
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
@@ -45,21 +48,18 @@ def get_args_parser():
     parser.add_argument('--landa_hamer', type=float, default=1.0, help='Data version.')
     parser.add_argument('--warmup', type=float, default=0.05, help='Warmup')
     
-    parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
+    parser.add_argument('--logger', type=str, default='wandb', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
     parser.add_argument('--output_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
     parser.add_argument('--log_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
     parser.add_argument('--save_csv', type=str, default="csv_outputs/", help='Output directory.')
     return parser
 
-WANDB_CONFIG = {"WANDB_API_KEY": "1af8cc2a4ed95f2ba66c31d193caf3dd61c3a41f", "WANDB_IGNORE_GLOBS":"*.patch", 
-                "WANDB_DISABLE_CODE": "true", "TOKENIZERS_PARALLELISM": "false"}
-def setupWandB(storage=None):
-    os.environ.update(WANDB_CONFIG)
+def setupWandB(wandb_configs, storage=None):
+    os.environ.update(wandb_configs)
     if storage is not None:
         os.environ['WANDB_CACHE_DIR'] = storage+'/wandb/cache'
         os.environ['WANDB_CONFIG_DIR'] = storage+'/wandb/config'
-
 def main(args):
     pl.seed_everything(args.seed)
     # fix the seed for reproducibility
@@ -67,6 +67,8 @@ def main(args):
 
     with open(args.data_config, 'r') as file:
             config = yaml.safe_load(file)
+    with open(args.secret_config, 'r') as file:
+            secret_config = yaml.safe_load(file)
 
     args.text_path = config['data']['labels']
     args.tokenizer_path = config['model']['tokenizer']
@@ -80,8 +82,8 @@ def main(args):
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if args.logger == 'wandb':
         save_dir=f'{args.log_dir}/log_{current_time}'
-        setupWandB(storage=save_dir)
-        logger = WandbLogger(project="New-PSP", config=vars(args))
+        setupWandB(secret_config["WANDB_CONFIG"],storage=save_dir)
+        logger = WandbLogger(project=config['wandb']['project'], config=vars(args))
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     
