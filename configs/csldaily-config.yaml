@@ -3,6 +3,7 @@ data:
     max_length: 300
     labels: /home/sobhan/Documents/Code/MLLM/data/csldaily/labels
     desc_path: /home/sobhan/Documents/Datasets/csldaily/Desc-Features
+    hamer_path: /home/sobhan/Documents/Datasets/CSLDaily_HaMeR_lzma/
 model:
     tokenizer: /home/sobhan/Documents/Weigths/MBart_trimmed_csldaily
     transformer: /home/sobhan/Documents/Weigths/MBart_trimmed_csldaily
@@ -12,7 +13,7 @@ model:
 training:
     wandb: disabled # online or disabled
     scale_embedding: False
-    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-03-07_15-26-01_landa_1.0/best-epoch=006-val_total_loss=1.377.ckpt
+    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-04-04_14-33-27_landa_desc_1.0_landa_hamer_1.0_warmup_0.05/best-epoch=001-val_total_loss=1.773.ckpt
 save:
     output: outputs/
     csv: csv_outputs/

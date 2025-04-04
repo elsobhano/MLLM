@@ -14,8 +14,6 @@ from models.clip_models import gloss_free_model
 from pathlib import Path
 import yaml
 
-import math
-
 SI_IDX,PAD_IDX,UNK_IDX,BOS_IDX, EOS_IDX = 0 ,1 ,2 ,3 ,4
 
 class FineTuneModel(pl.LightningModule):
@@ -101,14 +99,14 @@ class FineTuneModel(pl.LightningModule):
         self.log('learning_rate', lr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def training_step(self, batch, batch_idx):
-        src_input, tgt_input, _ = batch
+        src_input, tgt_input, *_ = batch
         outputs = self.model(src_input, tgt_input)
         loss = self.calc_loss(outputs, tgt_input['input_ids'])
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        src_input, tgt_input, _ = batch
+        src_input, tgt_input, *_ = batch
         outputs = self.model(src_input, tgt_input)
         loss = self.calc_loss(outputs, tgt_input['input_ids'])
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -178,7 +176,7 @@ class FineTuneModel(pl.LightningModule):
         self.logger.experiment.log({f"{split}_outputs_{epoch}": table})
     
     def test_step(self, batch, batch_idx):
-        src_input, tgt_input, _ = batch
+        src_input, tgt_input, *_ = batch
         outputs = self.model(src_input, tgt_input)
         loss = self.calc_loss(outputs, tgt_input['input_ids'])
 
@@ -278,11 +276,6 @@ class FineTuneModel(pl.LightningModule):
             gradient_clip_val=1.0,
             gradient_clip_algorithm="norm",
         )
-        # self.clip_gradients(
-        # optimizer,
-        # gradient_clip_val=1.0,
-        # gradient_clip_algorithm="value",
-        # )
 
     def add_data_to_csv(self,file_path, new_data, columns):
         """

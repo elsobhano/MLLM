@@ -41,7 +41,8 @@ def get_args_parser():
     parser.add_argument('--num_workers', type=int, default=10, help='Number of workers.')
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
-    parser.add_argument('--landa', type=float, default=1.0, help='Data version.')
+    parser.add_argument('--landa_desc', type=float, default=1.0, help='Data version.')
+    parser.add_argument('--landa_hamer', type=float, default=1.0, help='Data version.')
     parser.add_argument('--warmup', type=float, default=0.05, help='Warmup')
     
     parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
@@ -84,7 +85,7 @@ def main(args):
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     
-    dirpath = f'{args.output_dir}/run_{current_time}_landa_{args.landa}'
+    dirpath = f'{args.output_dir}/run_{current_time}_landa_desc_{args.landa_desc}_landa_hamer_{args.landa_hamer}_warmup_{args.warmup}'
     print("Current Time = {}".format(current_time)) 
     
     # set callbacks
@@ -103,7 +104,8 @@ def main(args):
     model = PreTrainModel(
                 config=args.data_config,
                 lr=args.lr,
-                landa=args.landa,
+                landa_desc=args.landa_desc,
+                landa_hamer=args.landa_hamer,
                 warmup=args.warmup,
                 )
     tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'])
