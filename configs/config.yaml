@@ -1,5 +1,5 @@
 data:
-    lmdb_path: /home/sobhan/Documents/Code/LLaMA-Adapter/SQA-Lightning/src/sqa/data/lmdb
+    lmdb_path: /home/sobhan/Documents/Datasets/Phoenix/lmdb
     max_length: 300
     labels: /home/sobhan/Documents/Code/MLLM/data/labels
     desc_path: /home/sobhan/Documents/Datasets/desc_feat/
@@ -14,7 +14,7 @@ model:
 training:
     wandb: disabled # online or disabled
     scale_embedding: False
-    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-03-26_17-27-06_landa_desc_1.0_landa_hamer_1.0/best-epoch=001-val_total_loss=1.824.ckpt
+    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-04-07_18-41-57_landa_desc_1.0_landa_hamer_1.0/best-epoch=001-val_total_loss=16.106.ckpt
     ckpt_path_landa=0.5: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-01-21_01-22-53/best-epoch=085-val_loss=0.000.ckpt
     ckpt_path_old: /home/sobhan/Documents/Code/MLLM/outputs/run_2024-12-29_18-57-45/best-epoch=010-val_loss=0.605.ckpt
     ckpt_path_shit_result_multi_stage: /home/sobhan/Documents/Code/MLLM/ckpts/best-epoch=089-val_loss=3.722-val_bleu=14.258.ckpt

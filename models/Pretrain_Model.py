@@ -9,8 +9,8 @@ class PreTrainModel(pl.LightningModule):
     def __init__(self,
                 config="configs/config.yaml",
                 lr=3e-4,
-                landa_desc=1.0,
-                landa_hamer=1.0,
+                landa_clip=1.0,
+                landa_lm=1.0,
                 ):
         super().__init__()
         #################Load the Config file####################
@@ -21,18 +21,17 @@ class PreTrainModel(pl.LightningModule):
         #################Set the Optimizer####################
         self.lr = lr
         criterion = KLLoss()
-        criterion_desc = KLLoss()
         self.loss_img = criterion
         self.loss_txt = criterion
-        self.loss_img_desc = criterion_desc
-        self.loss_txt_desc = criterion_desc
+        SI_IDX,PAD_IDX,UNK_IDX,BOS_IDX, EOS_IDX = 0 ,1 ,2 ,3 ,4
+        self.criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX, label_smoothing=0.2)
         ######################Prompts#######################
-        self.landa_desc = landa_desc
-        self.landa_hamer = landa_hamer
+        self.landa_clip = landa_clip
+        self.landa_lm = landa_lm
         self.save_hyperparameters()
     def forward(self, samples):
-        src_input, tgt_input, desc_feats = samples
-        return self.model(src_input, tgt_input, desc_feats)
+        src_input, tgt_input = samples
+        return self.model(src_input, tgt_input)
 
     def on_train_epoch_start(self):
         optimizer = self.trainer.optimizers[0]
@@ -40,73 +39,61 @@ class PreTrainModel(pl.LightningModule):
         self.log('learning_rate', lr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def training_step(self, input_batch, batch_idx):
-        hamer_feats, hamer_mask = input_batch[-2:]
-        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc, predicted_hamer = self(input_batch[:-2])
+        logits_per_image, logits_per_text, ground_truth, lm_logits = self(input_batch)
         
+        # Contrastive loss
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        train_clip_loss = (loss_imgs + loss_texts)/2.0
+        clip_loss = (loss_imgs + loss_texts)/2.0
         
-        loss_imgs_desc = self.loss_img_desc(logits_per_image_desc, ground_truth_desc)
-        loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
-        train_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
+        # Language model loss
+        loss_lm = self.calc_loss(lm_logits, input_batch[-1]['input_ids'])
         
-        train_hamer_loss = self.masked_l2_loss(predicted_hamer, hamer_feats, hamer_mask)
+        total_loss = self.landa_clip*clip_loss + self.landa_lm*loss_lm 
         
-        train_total_loss = train_clip_loss + self.landa_desc*train_clip_loss_desc + self.landa_hamer*train_hamer_loss
-        
-        self.log("train_clip_loss", train_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_clip_loss_desc", train_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_hamer_loss", train_hamer_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_total_loss", train_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_clip_loss", clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_lm_loss", loss_lm, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_total_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        return train_total_loss
+        return total_loss
 
     def validation_step(self, input_batch, batch_idx):
-        hamer_feats, hamer_mask = input_batch[-2:]
-        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc, predicted_hamer = self(input_batch[:-2])
+        logits_per_image, logits_per_text, ground_truth, lm_logits = self(input_batch)
         
+        # Contrastive loss
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        val_clip_loss = (loss_imgs + loss_texts)/2.0
+        clip_loss = (loss_imgs + loss_texts)/2.0
         
-        loss_imgs_desc = self.loss_img_desc(logits_per_image_desc, ground_truth_desc)
-        loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
-        val_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
+        # Language model loss
+        loss_lm = self.calc_loss(lm_logits, input_batch[-1]['input_ids'])
         
-        val_hamer_loss = self.masked_l2_loss(predicted_hamer, hamer_feats, hamer_mask)
+        total_loss = self.landa_clip*clip_loss + self.landa_lm*loss_lm 
         
-        val_total_loss = val_clip_loss + self.landa_desc*val_clip_loss_desc + self.landa_hamer*val_hamer_loss
-        
-        self.log("val_clip_loss", val_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val_clip_loss_desc", val_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val_hamer_loss", val_hamer_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val_total_loss", val_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        
-        return val_total_loss
+        self.log("val_clip_loss", clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_lm_loss", loss_lm, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val_total_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        return total_loss
     
     def test_step(self, input_batch, batch_idx):
-        hamer_feats, hamer_mask = input_batch[-2:]
-        logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc, predicted_hamer = self(input_batch[:-2])
+        logits_per_image, logits_per_text, ground_truth, lm_logits = self(input_batch)
         
+        # Contrastive loss
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
-        test_clip_loss = (loss_imgs + loss_texts)/2.0
+        clip_loss = (loss_imgs + loss_texts)/2.0
         
-        loss_imgs_desc = self.loss_img_desc(logits_per_image_desc, ground_truth_desc)
-        loss_texts_desc = self.loss_txt_desc(logits_per_text_desc, ground_truth_desc)
-        test_clip_loss_desc = (loss_imgs_desc + loss_texts_desc)/2.0
+        # Language model loss
+        loss_lm = self.calc_loss(lm_logits, input_batch[-1]['input_ids'])
         
-        test_hamer_loss = self.masked_l2_loss(predicted_hamer, hamer_feats, hamer_mask)
+        total_loss = self.landa_clip*clip_loss + self.landa_lm*loss_lm 
         
-        test_total_loss = test_clip_loss + self.landa_desc*test_clip_loss_desc + self.landa_hamer*test_hamer_loss
-        
-        self.log("test_clip_loss", test_clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("test_clip_loss_desc", test_clip_loss_desc, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("test_hamer_loss", test_hamer_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("test_total_loss", test_total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        
-        return test_total_loss
+        self.log("test_clip_loss", clip_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("test_lm_loss", loss_lm, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("test_total_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        return total_loss
 
     def add_weight_decay(self, weight_decay, skip_list=()):
         """Custom method to create parameter groups with/without weight decay."""
@@ -145,25 +132,8 @@ class PreTrainModel(pl.LightningModule):
             gradient_clip_val=1.0,
             gradient_clip_algorithm="norm",
         )
-    def masked_l2_loss(self, pred, target, mask):
-        """
-        Computes the masked L2 loss (Mean Squared Error) between predictions and targets.
-
-        Args:
-            pred (torch.Tensor): Predictions of shape (Batch_size, Sequence_length, dim).
-            target (torch.Tensor): Ground truth of shape (Batch_size, Sequence_length, dim).
-            mask (torch.Tensor): Binary mask of shape (Batch_size, Sequence_length), where 1 indicates valid values and 0 indicates padding.
-
-        Returns:
-            torch.Tensor: Scalar loss value.
-        """
-        B, T, D = pred.shape
-        # Compute squared error
-        squared_norm = torch.norm(pred - target, p=2, dim=-1) ** 2  # Shape: (Batch_size, Sequence_length, dim)
-        
-        masked_loss = squared_norm * mask
-        
-        # Compute mean over valid elements
-        loss = masked_loss.sum() / (mask.sum() * D)
-        
-        return loss
+    def calc_loss(self, outputs, targets):
+        # outputs = logit[:, :-1, :]
+        # targets = y[:, 1:]
+        vocab_siz =  outputs.size(-1)
+        return self.criterion(outputs.reshape(-1, vocab_siz), targets.reshape(-1))

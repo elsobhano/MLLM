@@ -46,11 +46,14 @@ class FineTuneModel(pl.LightningModule):
             if 'conv_2d' in k or 'conv_1d' in k:
                 k = 'backbone.'+'.'.join(k.split('.')[3:])
                 new_state_dict[k] = v
-            if 'mapper_1' in k or 'mapper_2' in k:
-                k = 'backbone.'+'.'.join(k.split('.')[3:])
-                new_state_dict[k] = v
+            # if 'mapper_1' in k or 'mapper_2' in k:
+            #     k = 'backbone.'+'.'.join(k.split('.')[3:])
+            #     new_state_dict[k] = v
             if 'trans_encoder' in k:
                 k = 'mbart.base_model.model.model.encoder.'+'.'.join(k.split('.')[5:])
+                new_state_dict[k] = v
+            if 'decoder' in k:
+                k = 'mbart.base_model.model.model.decoder.'+'.'.join(k.split('.')[5:])
                 new_state_dict[k] = v
 
         ret = self.model.load_state_dict(new_state_dict, strict=False)
@@ -95,14 +98,14 @@ class FineTuneModel(pl.LightningModule):
         self.log('learning_rate', lr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
     def training_step(self, batch, batch_idx):
-        src_input, tgt_input, *_ = batch
+        src_input, tgt_input = batch
         outputs = self.model(src_input, tgt_input)
         loss = self.calc_loss(outputs, tgt_input['input_ids'])
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        src_input, tgt_input, *_ = batch
+        src_input, tgt_input = batch
         outputs = self.model(src_input, tgt_input)
         loss = self.calc_loss(outputs, tgt_input['input_ids'])
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -172,7 +175,7 @@ class FineTuneModel(pl.LightningModule):
         self.logger.experiment.log({f"{split}_outputs_{epoch}": table})
     
     def test_step(self, batch, batch_idx):
-        src_input, tgt_input, *_ = batch
+        src_input, tgt_input = batch
         outputs = self.model(src_input, tgt_input)
         loss = self.calc_loss(outputs, tgt_input['input_ids'])
 
