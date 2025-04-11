@@ -464,7 +464,9 @@ class SLRCLIP(nn.Module):
         self.logit_scale_desc = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         
         self.text_decoder = Text_Decoder(config)
-
+        print('trainable params in text model:', trainable_params_model_texts)
+        print('trainable params in image model:', trainable_params_model_images)
+        print('trainable params in text decoder:', sum(p.numel() for p in self.text_decoder.parameters() if p.requires_grad))
     def compute_text_similarities_static(self, text_features):
         # Clone text features and disable gradient tracking
         text_features_static = text_features.clone().detach()
