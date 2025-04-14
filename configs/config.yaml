@@ -5,8 +5,8 @@ data:
     desc_path: /home/sobhan/Documents/Datasets/desc_feat/
 model:
     I3D: /home/sobhan/Documents/Code/PSP/tmp/meinedgs_i3d.pth.tar
-    tokenizer: /home/sobhan/Documents/Code/MLLM/MBart_trimmed
-    transformer: /home/sobhan/Documents/Code/MLLM/MBart_trimmed
+    tokenizer: /home/sobhan/Documents/Code/MBart_trimmed
+    transformer: /home/sobhan/Documents/Code/MBart_trimmed
     resnet: /home/sobhan/Documents/Code/MLLM/ckpts/resnet18.pth
     dino: /home/sobhan/Documents/Code/PSP/tmp/tmp.pth
     embed_dim: 1024

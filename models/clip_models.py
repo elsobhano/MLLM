@@ -12,7 +12,7 @@ from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 import torchvision
 import math
-from psp_head import HeadModel
+from models.psp_head import HeadModel
 PAD_IDX = 1
 
 def make_resnet(name='resnet18', resnet_path=None):
