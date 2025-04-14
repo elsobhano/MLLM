@@ -12,7 +12,7 @@ model:
 training:
     wandb: disabled # online or disabled
     scale_embedding: False
-    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-03-07_15-26-01_landa_1.0/best-epoch=006-val_total_loss=1.377.ckpt
+    ckpt_path: /home/sobhan/Documents/Code/MLLM/outputs/run_2025-04-11_12-45-02_landa_1.0/best-epoch=000-val_total_loss=1.457.ckpt
 save:
     output: outputs/
     csv: csv_outputs/
