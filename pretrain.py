@@ -44,7 +44,7 @@ def get_args_parser():
     parser.add_argument('--landa', type=float, default=1.0, help='Data version.')
     parser.add_argument('--warmup', type=float, default=0.05, help='Warmup')
     
-    parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
+    parser.add_argument('--logger', type=str, default='wandb', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
     parser.add_argument('--output_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
     parser.add_argument('--log_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
@@ -80,7 +80,7 @@ def main(args):
     if args.logger == 'wandb':
         save_dir=f'{args.log_dir}/log_{current_time}'
         setupWandB(storage=save_dir)
-        logger = WandbLogger(project="New-PSP", config=vars(args))
+        logger = WandbLogger(project="shit-test", config=vars(args), log_model=False)
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     
@@ -99,7 +99,7 @@ def main(args):
     # monitor_gradient_norm = MonitorGradientNorm()
     early_stop = EarlyStopping("val_loss", patience=args.epochs, mode="min", verbose=True)
     callbacks = [checkpoint_callback]
-    # manage_directory(args.save_csv)
+
     model = PreTrainModel(
                 config=args.data_config,
                 lr=args.lr,
