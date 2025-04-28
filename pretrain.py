@@ -29,7 +29,9 @@ def get_args_parser():
     parser.add_argument('--tokenizer_path', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/MBart_trimmed",
                         help='Path to the MBart tokenizer.')
     parser.add_argument('--encoder_ckpt', type=str, default=None, help='Path to the encoder checkpoint.')
-    parser.add_argument('--model_ckpt', type=str, default=None, help='Path to the model checkpoint.')
+    parser.add_argument('--resume_ckpt', type=str, default=None, help='Path to the model checkpoint.')
+    ##################################################################################################
+    parser.add_argument('--ckpt_path', type=str, default=None, help='.')
     parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate.')
     ##################Data Params##########################################################
     parser.add_argument('--text_path', type=str, default="/mnt/fast/nobackup/users/sa04359/CLIP/MLLM/data/labels", 
@@ -37,12 +39,14 @@ def get_args_parser():
     parser.add_argument('--qa_csv_path', type=str, default=None,
                         help='Path to the csv file.')
     parser.add_argument('--data_config', type=str, default='configs/csldaily-config.yaml',
-                        help='Path to the data config file.')  
+                        help='Path to the data config file.')
+    
     parser.add_argument('--num_workers', type=int, default=10, help='Number of workers.')
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
     parser.add_argument('--landa', type=float, default=1.0, help='Data version.')
     parser.add_argument('--warmup', type=float, default=0.05, help='Warmup')
+    parser.add_argument('--scheduler', type=str, default="one-cycle", help='Scheduler type.')
     
     parser.add_argument('--logger', type=str, default='wandb', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
@@ -75,12 +79,13 @@ def main(args):
     args.save_csv = args.save_csv.split("/")[0] + str(args.data_ver) + "/"
     args.model_ckpt = config['training']['ckpt_path']
     
+    
     # set logger
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if args.logger == 'wandb':
         save_dir=f'{args.log_dir}/log_{current_time}'
         setupWandB(storage=save_dir)
-        logger = WandbLogger(project="shit-test", config=vars(args), log_model=False)
+        logger = WandbLogger(project="new_shit-test", config=vars(args), log_model=False)
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     
@@ -100,12 +105,6 @@ def main(args):
     early_stop = EarlyStopping("val_loss", patience=args.epochs, mode="min", verbose=True)
     callbacks = [checkpoint_callback]
 
-    model = PreTrainModel(
-                config=args.data_config,
-                lr=args.lr,
-                landa=args.landa,
-                warmup=args.warmup,
-                )
     tokenizer = MBartTokenizer.from_pretrained(config['model']['tokenizer'])
 
     data_module = DataModule(
@@ -117,18 +116,41 @@ def main(args):
                 num_workers=args.num_workers,
                 data_ver=args.data_ver)
     
-    trainer = pl.Trainer(
-        logger=logger,
-        num_sanity_val_steps=0,
-        accelerator="gpu",
-        devices=1,
-        min_epochs=1,
-        max_epochs=args.epochs,
-        precision=16,
-        callbacks=callbacks,
-    )
+    if args.resume_ckpt is not None:
+        print(f"Loading and Resuming Training from {args.resume_ckpt}")
+        model = PreTrainModel.load_from_checkpoint(args.resume_ckpt)
+        trainer = pl.Trainer(
+            # ckpt_path=args.resume_ckpt,
+            logger=logger,
+            num_sanity_val_steps=0,
+            accelerator="gpu",
+            devices=1,
+            min_epochs=1,
+            max_epochs=args.epochs,
+            precision=16,
+            callbacks=callbacks,
+        )
+        trainer.fit(model, data_module, ckpt_path=args.resume_ckpt)
+    else:
+        model = PreTrainModel(
+                    config=args.data_config,
+                    lr=args.lr,
+                    landa=args.landa,
+                    warmup=args.warmup,
+                    scheduler=args.scheduler,
+                    )
+        trainer = pl.Trainer(
+            logger=logger,
+            num_sanity_val_steps=0,
+            accelerator="gpu",
+            devices=1,
+            min_epochs=1,
+            max_epochs=args.epochs,
+            precision=16,
+            callbacks=callbacks,
+        )
+        trainer.fit(model, data_module)
 
-    trainer.fit(model, data_module)
     best_model_path = checkpoint_callback.best_model_path
     print(f"Best model path: {best_model_path}")
     best_model = PreTrainModel.load_from_checkpoint(best_model_path)

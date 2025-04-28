@@ -11,6 +11,7 @@ class PreTrainModel(pl.LightningModule):
                 lr=3e-4,
                 landa=1.0,
                 warmup=0.05,
+                scheduler="one-cycle",
                 ):
         super().__init__()
         self.save_hyperparameters()
@@ -30,6 +31,7 @@ class PreTrainModel(pl.LightningModule):
         self.loss_txt_desc = criterion_desc
         ######################Prompts#######################
         self.landa = landa
+        self.scheduler = scheduler
     def forward(self, samples):
         src_input, tgt_input, desc_feats = samples
         return self.model(src_input, tgt_input, desc_feats)
@@ -113,17 +115,31 @@ class PreTrainModel(pl.LightningModule):
         print(f'lr: {self.lr}')
         optimizer = torch.optim.AdamW(self.add_weight_decay(weight_decay=0.01), lr=self.lr)
         
-        scheduler = {
-            "scheduler": torch.optim.lr_scheduler.OneCycleLR(
-                optimizer,
-                max_lr=self.lr,
-                total_steps=self.trainer.estimated_stepping_batches,
-                pct_start=0.05,  # 5% of total steps for warmup
-                anneal_strategy='cos',
-            ),
-            "interval": "step",
-            "frequency": 1,
-        }
+        if self.scheduler == "one-cycle":
+            print("Using one-cycle scheduler")
+            scheduler = {
+                "scheduler": torch.optim.lr_scheduler.OneCycleLR(
+                    optimizer,
+                    max_lr=self.lr,
+                    total_steps=self.trainer.estimated_stepping_batches,
+                    pct_start=self.warmup,  # 5% of total steps for warmup
+                    anneal_strategy='cos',
+                ),
+                "interval": "step",
+                "frequency": 1,
+            }
+
+        elif self.scheduler == "cosine":
+            print("Using cosine annealing scheduler")
+            scheduler = {
+                "scheduler": torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer,
+                    T_max=self.trainer.estimated_stepping_batches,
+                    eta_min=1e-8,
+                ),
+                "interval": "step",
+                "frequency": 1,
+            }
         
         return [optimizer], [scheduler]
 

@@ -130,16 +130,6 @@ def main(args):
     dirpath = f'{args.output_dir}/run_{current_time}_{args.run_ver}'
     print("Current Time = {}".format(current_time)) 
     
-    # set callbacks
-    # checkpoint_callback = ModelCheckpoint(
-    # save_top_k=1,
-    # save_last=True,
-    # monitor="val_bleu",
-    # every_n_epochs=args.eval_freq + 1,
-    # mode="max",
-    # dirpath=dirpath,
-    # filename="best-{epoch:03d}-{val_loss:.3f}-{val_bleu:.3f}",
-    # )
     checkpoint_callback = SaveBestModelOnNEpochs(
         save_every_n_epochs=args.eval_freq, 
         monitor="val_bleu", mode="max", 
