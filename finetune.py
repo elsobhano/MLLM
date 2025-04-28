@@ -35,8 +35,8 @@ def get_args_parser():
                         help='Path to the text data.')
     parser.add_argument('--qa_csv_path', type=str, default=None,
                         help='Path to the csv file.')
-    parser.add_argument('--data_config', type=str, default='configs/config.yaml',
-                        help='Path to the data config file.')  
+    parser.add_argument('--data_config', type=str, default='configs/config.yaml', help='Path to the data config file.')
+    parser.add_argument('--secret_config', type=str, default='configs/secret.yaml', help='Path to the secret config file.')  
     parser.add_argument('--num_workers', type=int, default=10, help='Number of workers.')
     parser.add_argument('--batch_size', type=int, default=4, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
@@ -88,9 +88,8 @@ def get_args_parser():
                         help='LR decay rate (default: 0.1)')
     return parser
 
-WANDB_CONFIG = {"WANDB_API_KEY": "1af8cc2a4ed95f2ba66c31d193caf3dd61c3a41f", "WANDB_IGNORE_GLOBS":"*.patch", 
-                "WANDB_DISABLE_CODE": "true", "TOKENIZERS_PARALLELISM": "false"}
-def setupWandB(storage=None):
+
+def setupWandB(WANDB_CONFIG, storage=None):
     os.environ.update(WANDB_CONFIG)
     if storage is not None:
         os.environ['WANDB_CACHE_DIR'] = storage+'/wandb/cache'
@@ -104,6 +103,9 @@ def main(args):
 
     with open(args.data_config, 'r') as file:
             config = yaml.safe_load(file)
+    with open(args.secret_config, 'r') as file:
+            secret_config = yaml.safe_load(file)
+
 
     args.text_path = config['data']['labels']
     args.tokenizer_path = config['model']['tokenizer']
@@ -117,7 +119,7 @@ def main(args):
     current_time = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     if args.logger == 'wandb':
         save_dir=f'{args.log_dir}/log_{current_time}'
-        setupWandB(storage=save_dir)
+        setupWandB(WANDB_CONFIG=secret_config["WANDB_CONFIG"], storage=save_dir)
         logger = WandbLogger(project="multi-test", config=vars(args))
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
