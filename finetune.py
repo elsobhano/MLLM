@@ -19,22 +19,18 @@ from datetime import datetime
 torch.set_float32_matmul_precision("medium")
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('Sign2GPT', add_help=False)
+    parser = argparse.ArgumentParser('Sign Translation', add_help=False)
     
     parser.add_argument('--epochs', default=10, type=int, metavar='N', help='number of total epochs to run')
     parser.add_argument('--num_gpus', default=1, type=int, metavar='N', help='number of gpus per node')
-    parser.add_argument('--eval_freq', default=5, type=int, metavar='N', 
-                        help='The frequency of metric evaluation, e.g Bleu score')
+    parser.add_argument('--eval_freq', default=5, type=int, metavar='N', help='The frequency of metric evaluation, e.g Bleu score')
     ##################Transformer and Encoder Params####################################   
-    parser.add_argument('--tokenizer_path', type=str, default="pretrain_models/MBart_trimmed",
-                        help='Path to the MBart tokenizer.')
+    parser.add_argument('--tokenizer_path', type=str, default="pretrain_models/MBart_trimmed", help='Path to the MBart tokenizer.')
     parser.add_argument('--encoder_ckpt', type=str, default=None, help='Path to the encoder checkpoint.')
     parser.add_argument('--model_ckpt', type=str, default='pretrain_new/run_2024-12-07_14-22-28/best-epoch=050-val_loss=0.921.ckpt', help='Path to the model checkpoint.')
     ##################Data Params##########################################################
-    parser.add_argument('--text_path', type=str, default="data/labels", 
-                        help='Path to the text data.')
-    parser.add_argument('--qa_csv_path', type=str, default=None,
-                        help='Path to the csv file.')
+    parser.add_argument('--text_path', type=str, default="data/labels", help='Path to the text data.')
+    parser.add_argument('--qa_csv_path', type=str, default=None, help='Path to the csv file.')
     parser.add_argument('--data_config', type=str, default='configs/config.yaml', help='Path to the data config file.')
     parser.add_argument('--secret_config', type=str, default='configs/secret.yaml', help='Path to the secret config file.')  
     parser.add_argument('--num_workers', type=int, default=10, help='Number of workers.')
@@ -126,20 +122,11 @@ def main(args):
     dirpath = f'{args.output_dir}/run_{current_time}_{args.data_ver}'
     print("Current Time = {}".format(current_time)) 
     
-    # set callbacks
-    # checkpoint_callback = ModelCheckpoint(
-    # save_top_k=1,
-    # save_last=True,
-    # monitor="val_bleu",
-    # every_n_epochs=args.eval_freq + 1,
-    # mode="max",
-    # dirpath=dirpath,
-    # filename="best-{epoch:03d}-{val_loss:.3f}-{val_bleu:.3f}",
-    # )
     checkpoint_callback = SaveBestModelOnNEpochs(
         save_every_n_epochs=args.eval_freq, 
         monitor="val_bleu", mode="max", 
         dirpath=dirpath)
+    
     early_stop = EarlyStopping("val_loss", patience=args.epochs, mode="min", verbose=True)
     callbacks = [checkpoint_callback]
     manage_directory(args.save_csv)

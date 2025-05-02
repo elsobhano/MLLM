@@ -81,13 +81,22 @@ class PreTrainModel(pl.LightningModule):
         print(f'lr: {self.lr}')
         optimizer = torch.optim.AdamW(self.add_weight_decay(weight_decay=0.01), lr=self.lr)
         
+        # scheduler = {
+        #     "scheduler": torch.optim.lr_scheduler.OneCycleLR(
+        #         optimizer,
+        #         max_lr=self.lr,
+        #         total_steps=self.trainer.estimated_stepping_batches,
+        #         pct_start=0.05,  # 5% of total steps for warmup
+        #         anneal_strategy='cos',
+        #     ),
+        #     "interval": "step",
+        #     "frequency": 1,
+        # }
+        
         scheduler = {
-            "scheduler": torch.optim.lr_scheduler.OneCycleLR(
+            "scheduler": torch.optim.lr_scheduler.LambdaLR(
                 optimizer,
-                max_lr=self.lr,
-                total_steps=self.trainer.estimated_stepping_batches,
-                pct_start=0.05,  # 5% of total steps for warmup
-                anneal_strategy='cos',
+                lr_lambda=lambda step: 1.0
             ),
             "interval": "step",
             "frequency": 1,
@@ -99,12 +108,12 @@ class PreTrainModel(pl.LightningModule):
         # Implement your own custom logic to clip gradients
         # You can call `self.clip_gradients` with your settings:
         self.clip_gradients(
-        optimizer,
-        gradient_clip_val=1.0,
-        gradient_clip_algorithm="value",
-        )
-        self.clip_gradients(
             optimizer,
             gradient_clip_val=1.0,
             gradient_clip_algorithm="norm",
         )
+        # self.clip_gradients(
+        # optimizer,
+        # gradient_clip_val=1.0,
+        # gradient_clip_algorithm="value",
+        # )
