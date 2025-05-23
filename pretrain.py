@@ -37,15 +37,15 @@ def get_args_parser():
                         help='Path to the text data.')
     parser.add_argument('--qa_csv_path', type=str, default=None,
                         help='Path to the csv file.')
-    parser.add_argument('--data_config', type=str, default='configs/config.yaml',
-                        help='Path to the data config file.')  
+    parser.add_argument('--data_config', type=str, default='configs/config.yaml', help='Path to the data config file.')
+    parser.add_argument('--secret_config', type=str, default='configs/secret.yaml', help='Path to the data config file.')  
     parser.add_argument('--num_workers', type=int, default=1, help='Number of workers.')
     parser.add_argument('--batch_size', type=int, default=2, help='Batch size.')
     parser.add_argument('--data_ver', type=int, default=0, help='Data version.')
     parser.add_argument('--landa_desc', type=float, default=1.0, help='Data version.')
     parser.add_argument('--landa_hamer', type=float, default=1.0, help='Data version.')
     
-    parser.add_argument('--logger', type=str, default='tensorboard', help='Logger type.')
+    parser.add_argument('--logger', type=str, default='wandb', help='Logger type.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed.')
     parser.add_argument('--output_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
     parser.add_argument('--log_dir', type=str, default="/mnt/fast/nobackup/scratch4weeks/sa04359/pretrain_clip", help='Output directory.')
@@ -81,11 +81,11 @@ def main(args):
     if args.logger == 'wandb':
         save_dir=f'{args.log_dir}/log_{current_time}'
         setupWandB(storage=save_dir)
-        logger = WandbLogger(project="New-PSP", config=vars(args))
+        logger = WandbLogger(project="Cross_Pre", config=vars(args), log_model=False,)
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     
-    dirpath = f'{args.output_dir}/run_{current_time}_landa_desc_{args.landa_desc}_landa_hamer_{args.landa_hamer}'
+    dirpath = f'{args.output_dir}/run_{current_time}_lr_{args.lr}'
     print("Current Time = {}".format(current_time)) 
     
     # set callbacks

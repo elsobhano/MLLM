@@ -9,10 +9,8 @@ from torch.nn.init import constant_
 from models.utils import local_1d_pattern
 import numpy as np
 from torch import Tensor
-from torch.nn.utils.rnn import pad_sequence
 import torchvision
 import math
-from psp_head import HeadModel
 PAD_IDX = 1
 
 def make_resnet(name='resnet18', resnet_path=None):
@@ -146,14 +144,16 @@ class FeedForward(nn.Module):
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, num_heads, dropout=0.1, max_seq_len=300, windfow_size=7,
-                use_layer_scale=True, layer_scale_init_value=1e-5,
-                ):
+                use_layer_scale=True, layer_scale_init_value=1e-5, use_rotay=True, use_local_mask=True):
+                
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.window_size = windfow_size
-
+        self.use_rotay = use_rotay
+        self.use_local_mask = use_local_mask
+        
         assert self.head_dim * num_heads == d_model, "d_model must be divisible by num_heads"
 
         # Linear layers for Q, K, V
@@ -164,7 +164,8 @@ class MultiHeadAttention(nn.Module):
         if isinstance(self.out_proj, nn.Linear) and self.out_proj.bias is not None:
             constant_(self.out_proj.bias, 0.0)
         # Rotary positional embeddings
-        self.rotary_emb = RotaryPositionalEmbedding(self.head_dim, max_seq_len)
+        if self.use_rotay:
+            self.rotary_emb = RotaryPositionalEmbedding(self.head_dim, max_seq_len)
 
         # Dropout
         self.dropout = nn.Dropout(dropout)
@@ -175,7 +176,8 @@ class MultiHeadAttention(nn.Module):
 
 
     def forward(self, query, key, value, mask=None):
-        batch_size, seq_len, embed_dim = query.shape
+        batch_size, query_seq_len, embed_dim = query.shape
+        batch_size, key_seq_len, embed_dim = key.shape
 
         # Linear projections
         query = self.query_proj(query)  # (batch_size, seq_len, embed_dim)
@@ -183,9 +185,9 @@ class MultiHeadAttention(nn.Module):
         value = self.value_proj(value)  # (batch_size, seq_len, embed_dim)
 
         # Reshape to (batch_size, seq_len, num_heads, head_dim)
-        query = query.view(batch_size, seq_len, self.num_heads, self.head_dim)
-        key = key.view(batch_size, seq_len, self.num_heads, self.head_dim)
-        value = value.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        query = query.view(batch_size, query_seq_len, self.num_heads, self.head_dim)
+        key = key.view(batch_size, key_seq_len, self.num_heads, self.head_dim)
+        value = value.view(batch_size, key_seq_len, self.num_heads, self.head_dim)
 
         # Transpose for attention computation: (batch_size, num_heads, seq_len, head_dim)
         query = query.transpose(1, 2)
@@ -193,26 +195,35 @@ class MultiHeadAttention(nn.Module):
         value = value.transpose(1, 2)
 
         # Apply rotary positional embeddings
-        query, key = self.rotary_emb(query, key, seq_len)
+        if self.use_rotay:
+            query, key = self.rotary_emb(query, key, query_seq_len)
 
         # Scaled dot-product attention
         scores = torch.matmul(query, key.transpose(-2, -1)) / (self.head_dim ** 0.5)  # (batch_size, num_heads, seq_len, seq_len)
 
-        local_mask = local_1d_pattern(seq_len, self.window_size).to(scores.device)
-        local_mask = local_mask.unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, seq_len, seq_len)
-        # local_mask = torch.ones_like(local_mask)
-
-        # Apply mask (if provided)
-        if mask is not None:
-            # Reshape mask to (batch_size, 1, 1, seq_len) for broadcasting
-            mask = mask.unsqueeze(1).unsqueeze(1)  # (batch_size, 1, 1, seq_len)
-            combined_mask = local_mask * mask
-            # Apply mask to scores
+        if self.use_local_mask:
+            local_mask = local_1d_pattern(query_seq_len, self.window_size).to(scores.device)
+            local_mask = local_mask.unsqueeze(0).unsqueeze(0)  # Shape: (1, 1, seq_len, seq_len)
+            # Apply mask (if provided)
+            if mask is not None:
+                # Reshape mask to (batch_size, 1, 1, query_seq_len) for broadcasting
+                mask = mask.unsqueeze(1).unsqueeze(1)  # (batch_size, 1, 1, seq_len)
+                combined_mask = local_mask * mask
+                # Apply mask to scores
+            else:
+                combined_mask = local_mask
+            # Ensure each token attends to itself
+            diag_mask = torch.eye(query_seq_len, dtype=torch.bool, device=scores.device).unsqueeze(0).unsqueeze(0)
+            combined_mask = combined_mask | diag_mask
         else:
-            combined_mask = local_mask
-        # Ensure each token attends to itself
-        diag_mask = torch.eye(seq_len, dtype=torch.bool, device=scores.device).unsqueeze(0).unsqueeze(0)
-        combined_mask = combined_mask | diag_mask
+            mask = mask.unsqueeze(-1)
+            mask = mask.unsqueeze(1) # (batch_size, 1, query_seq_len, 1)
+            mask = mask.bool()
+            local_mask = torch.ones((batch_size, 1, query_seq_len, key_seq_len), device=mask.device).bool()
+            combined_mask = local_mask * mask # (batch_size, 1, query_seq_len, key_seq_len)
+            # diag_mask = torch.eye(n=query_seq_len, m=key_seq_len, dtype=torch.bool, device=scores.device).unsqueeze(0).unsqueeze(0)
+            # combined_mask = combined_mask | diag_mask
+            
         
         scores = scores.masked_fill(combined_mask == 0, float('-inf'))  # Replace masked positions with -inf
         
@@ -223,7 +234,7 @@ class MultiHeadAttention(nn.Module):
         out = torch.matmul(attn_weights, value)  # (batch_size, num_heads, seq_len, head_dim)
 
         # Concatenate heads and project output
-        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)  # (batch_size, seq_len, embed_dim)
+        out = out.transpose(1, 2).contiguous().view(batch_size, query_seq_len, embed_dim)  # (batch_size, seq_len, embed_dim)
 
         # Final linear projection
         out = self.dropout(self.out_proj(out))
@@ -233,7 +244,170 @@ class MultiHeadAttention(nn.Module):
             out = out * self.layer_scale
 
         return out
+    
+class CrossAttention(nn.Module):
+    """
+    Multi-Head Attention module with optional Rotary Positional Embeddings,
+    Layer Scale, and Local Masking.
+    Supports both self-attention and cross-attention.
+    """
+    def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1, max_seq_len: int = 300,
+                 window_size: int = 7, use_layer_scale: bool = True,
+                 layer_scale_init_value: float = 1e-5, use_rotay: bool = True,
+                 use_local_mask: bool = True):
+                
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads # Dimension of each attention head
+        self.window_size = window_size
+        self.use_rotay = use_rotay
+        self.use_local_mask = use_local_mask
+        
+        # Ensure d_model is divisible by num_heads
+        assert self.head_dim * num_heads == d_model, "d_model must be divisible by num_heads"
 
+        # Linear layers for projecting Query, Key, and Value
+        self.query_proj = nn.Linear(d_model, d_model)
+        self.key_proj = nn.Linear(d_model, d_model)
+        self.value_proj = nn.Linear(d_model, d_model)
+        # Output projection layer
+        self.out_proj = nn.Linear(d_model, d_model)
+        # Initialize bias of out_proj to zero if it exists
+        if isinstance(self.out_proj, nn.Linear) and self.out_proj.bias is not None:
+            constant_(self.out_proj.bias, 0.0)
+
+        # Rotary positional embeddings
+        if self.use_rotay:
+            self.rotary_emb = RotaryPositionalEmbedding(self.head_dim, max_seq_len)
+
+        # Dropout layer for attention weights
+        self.dropout = nn.Dropout(dropout)
+
+        # Layer Scale for post-attention output (often used in Swin Transformers, etc.)
+        self.use_layer_scale = use_layer_scale
+        if self.use_layer_scale:
+            # Learnable parameter for scaling the output of the attention block
+            self.layer_scale = nn.Parameter(layer_scale_init_value * torch.ones(d_model), requires_grad=True)
+
+
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, 
+                mask: torch.Tensor = None, query_mask: torch.Tensor = None) -> torch.Tensor:
+        """
+        Performs multi-head attention.
+
+        Args:
+            query (torch.Tensor): Query tensor (batch_size, query_seq_len, embed_dim).
+            key (torch.Tensor): Key tensor (batch_size, key_seq_len, embed_dim).
+            value (torch.Tensor): Value tensor (batch_size, key_seq_len, embed_dim).
+            mask (torch.Tensor, optional): An attention mask for keys/values.
+                                           Can be (batch_size, key_seq_len) for padding,
+                                           or (batch_size, query_seq_len, key_seq_len) for causal/combined masks.
+                                           False indicates positions to be masked out. Defaults to None.
+            query_mask (torch.Tensor, optional): A mask for the query sequence.
+                                                Expected shape (batch_size, query_seq_len).
+                                                False indicates query positions to be masked out. Defaults to None.
+
+        Returns:
+            torch.Tensor: Output tensor after attention and projection (batch_size, query_seq_len, embed_dim).
+        """
+        batch_size, query_seq_len, embed_dim = query.shape
+        # key_seq_len can be different from query_seq_len in cross-attention
+        _, key_seq_len, _ = key.shape 
+
+        # 1. Linear projections for Q, K, V
+        query = self.query_proj(query)  # (batch_size, query_seq_len, embed_dim)
+        key = self.key_proj(key)        # (batch_size, key_seq_len, embed_dim)
+        value = self.value_proj(value)  # (batch_size, key_seq_len, embed_dim)
+
+        # 2. Reshape for multi-head attention
+        # Reshape to (batch_size, seq_len, num_heads, head_dim)
+        query = query.view(batch_size, query_seq_len, self.num_heads, self.head_dim)
+        key = key.view(batch_size, key_seq_len, self.num_heads, self.head_dim)
+        value = value.view(batch_size, key_seq_len, self.num_heads, self.head_dim)
+
+        # Transpose for attention computation: (batch_size, num_heads, seq_len, head_dim)
+        query = query.transpose(1, 2)
+        key = key.transpose(1, 2)
+        value = value.transpose(1, 2)
+
+        # 3. Apply Rotary Positional Embeddings
+        if self.use_rotay:
+            # RoPE is typically applied to query and key based on their own sequence lengths.
+            # For cross-attention, `query_seq_len` is often used as the reference length
+            # for relative positions.
+            query, key = self.rotary_emb(query, key, query_seq_len)
+
+        # 4. Scaled Dot-Product Attention
+        # scores shape: (batch_size, num_heads, query_seq_len, key_seq_len)
+        scores = torch.matmul(query, key.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        scores = torch.clamp(scores, min=-10000.0, max=10000.0)
+
+        # 5. MASKING LOGIC (FIXED)
+        # Initialize a base mask that allows all attention (all True)
+        # This will be refined by subsequent masking conditions.
+        final_mask = torch.ones(batch_size, self.num_heads, query_seq_len, key_seq_len, dtype=torch.bool, device=scores.device)
+
+        # 5.1. Apply user-provided mask (e.g., padding mask from encoder output)
+        if mask is not None:
+            # Ensure mask is boolean for logical operations
+            mask = mask.bool()
+            
+            # Expand mask to match scores dimensions for broadcasting
+            if mask.dim() == 2: # Common case: mask is (batch_size, key_seq_len) for padding
+                # Expand to (batch_size, 1, 1, key_seq_len) to broadcast across heads and query_seq_len
+                expanded_user_mask = mask.unsqueeze(1).unsqueeze(2)
+            elif mask.dim() == 3: # More complex case: mask is (batch_size, query_seq_len, key_seq_len)
+                # Expand to (batch_size, 1, query_seq_len, key_seq_len) to broadcast across heads
+                expanded_user_mask = mask.unsqueeze(1)
+            else:
+                raise ValueError(f"Unsupported mask dimension for user mask: {mask.dim()}. Expected 2 or 3.")
+            
+            # Apply the user-provided mask (False means mask out)
+            final_mask = final_mask & expanded_user_mask
+
+        # 5.2. Apply query mask (to prevent masked query tokens from attending)
+        if query_mask is not None:
+            query_mask = query_mask.bool()
+            # Expand to (batch_size, 1, query_seq_len, 1) to broadcast across heads and key_seq_len
+            expanded_query_mask = query_mask.unsqueeze(1).unsqueeze(-1)
+            final_mask = final_mask & expanded_query_mask
+
+        # 5.3. Apply local attention mask (if enabled)
+        if self.use_local_mask:
+            # Create a local attention pattern mask of shape (query_seq_len, key_seq_len)
+            local_mask_pattern = local_1d_pattern(query_seq_len, key_seq_len, self.window_size).to(scores.device)
+            # Expand to (1, 1, query_seq_len, key_seq_len) for broadcasting across batch and heads
+            expanded_local_mask = local_mask_pattern.unsqueeze(0).unsqueeze(0)
+            
+            # Combine with the existing mask (which might already include padding)
+            final_mask = final_mask & expanded_local_mask
+
+        # Apply the final combined mask to scores
+        # Positions where `final_mask` is False will be set to -inf, effectively masking them out.
+        scores = scores.masked_fill(~final_mask, float('-inf')) # Use ~ for logical NOT on boolean tensor
+        
+        # 6. Softmax and Dropout
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = torch.nan_to_num(attn_weights, nan=0.0)
+        attn_weights = self.dropout(attn_weights) # Dropout applied to attention weights
+
+        # 7. Apply attention to values
+        out = torch.matmul(attn_weights, value)  # (batch_size, num_heads, query_seq_len, head_dim)
+
+        # 8. Concatenate heads and project output
+        # Transpose back to (batch_size, query_seq_len, num_heads, head_dim)
+        # Then flatten the last two dimensions to (batch_size, query_seq_len, embed_dim)
+        out = out.transpose(1, 2).contiguous().view(batch_size, query_seq_len, embed_dim)
+
+        # 9. Final linear projection
+        out = self.out_proj(out) # Dropout is applied after the linear projection based on your original code
+
+        # 10. Apply layer scaling if enabled
+        if self.use_layer_scale:
+            out = out * self.layer_scale
+
+        return out
 class TransformerBlock(nn.Module):
     def __init__(self, d_model, num_heads, drop_path_rate):
         super().__init__()
@@ -351,23 +525,7 @@ class FeatureExtracter(nn.Module):
     def __init__(self, dino_path=None):
         super().__init__()
         self.conv_2d = dino(dino_path) # InceptionI3d()
-        
-        self.hamer_mapper_1 = nn.Linear(512, 288)
-        self.hamer_mapper_1_ac_fn= nn.GELU(approximate="tanh")
-        self.hamer_mapper_1_drop = nn.Dropout(0.1)
-        self.hamer_mapper_2 = nn.Linear(288, 512)
-        
-        self.mapper_1_downsample = nn.Sequential(
-                nn.Linear(in_features=1024, out_features=512),
-                nn.GELU(approximate="tanh")
-            )
-        
-        self.conv_1d = Transformer(d_model=512, num_heads=8, layers=[2,2], d_llm=512)
-        self.mapper_1 = nn.Linear(512, 1024)
-        self.mapper_1_ac_fn= nn.GELU(approximate="tanh")
-        self.mapper_1_drop = nn.Dropout(0.1)
-        self.mapper_2 = nn.Linear(1024, 512)
-
+        self.conv_1d = Transformer(d_model=512, num_heads=8, layers=[2,2], d_llm=1024)
     def forward(self,
                 src: Tensor,
                 src_length_batch,
@@ -375,25 +533,9 @@ class FeatureExtracter(nn.Module):
                 ):
         # src shape: (all_frames_in_batch, 3, 224, 224)
         src, mask = self.conv_2d(src, src_length_batch) #(batch_size, seq_len, dim=512)
-
-        hamer_1 = self.hamer_mapper_1(src)
-        hamer_1_activated = self.hamer_mapper_1_ac_fn(hamer_1)
-        hamer_1_dropped = self.hamer_mapper_1_drop(hamer_1_activated)
-        hamer_2 = self.hamer_mapper_2(hamer_1_dropped)
-        src = torch.cat([src, hamer_2], dim=-1)
-        
-        src = self.mapper_1_downsample(src)
-
         src, mask = self.conv_1d(src, mask) #(batch_size, new_seq_len, new_dim=512)
 
-        desc_1 = self.mapper_1(src) #(batch_size, new_seq_len, new_dim=1024)
-        desc_1_activated = self.mapper_1_ac_fn(desc_1)
-        desc_1_dropped = self.mapper_1_drop(desc_1_activated)
-        desc_2 = self.mapper_2(desc_1_dropped) #(batch_size, new_seq_len, new_dim=512)
-
-        src = torch.cat([src, desc_2], dim=-1) #(batch_size, new_seq_len, new_dim=1024)
-
-        return src, mask, hamer_1_dropped, desc_1_dropped
+        return src, mask
 
 class TextCLIP(nn.Module):
     def __init__(self, config=None, inplanes=1024, planes=1024, head_type='identy'):
@@ -401,9 +543,9 @@ class TextCLIP(nn.Module):
         self.model_txt = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder() 
 
     def forward(self, tgt_input):
-        txt_logits = self.model_txt(input_ids=tgt_input['input_ids'], attention_mask=tgt_input['attention_mask'])[0]
-        txt_logits = txt_logits.mean(dim=1)
-        return txt_logits
+        txt_feats = self.model_txt(input_ids=tgt_input['input_ids'], attention_mask=tgt_input['attention_mask'])[0]
+        txt_logits = txt_feats.mean(dim=1)
+        return txt_feats, txt_logits
 
 class ImageCLIP(nn.Module):
     def __init__(self, config, inplanes=1024, planes=1024, head_type='linear') :
@@ -435,7 +577,7 @@ class ImageCLIP(nn.Module):
         # self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
 
     def forward(self, src_input):
-        x, attention_mask, predicted_hamer , img_to_desc = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
+        x, attention_mask = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
         # attention_mask = src_input['attention_mask']
 
         # B, N, C = x.shape
@@ -447,82 +589,9 @@ class ImageCLIP(nn.Module):
         last_hidden_state = outs['last_hidden_state']
         img_logits = last_hidden_state.mean(dim=1)
         
-        img_to_desc = img_to_desc.mean(dim=1)
         
-        return img_logits, img_to_desc, predicted_hamer
+        return last_hidden_state, img_logits, attention_mask
 
-class Desc_Clip(nn.Module):
-    def __init__(self, config, inplanes=1024, planes=1024, head_type='linear') :
-        super(Desc_Clip, self).__init__()
-        self.config = config
-        self.model =  FeatureExtracter(dino_path=config['model']['dino'])
-        
-        trans_encoder = MBartForConditionalGeneration.from_pretrained(config['model']['transformer']).get_encoder()
-        lora_config = LoraConfig(
-            inference_mode=False,          # Enable training
-            r=16,                          # Rank of the update matrices
-            lora_alpha=32,                 # LoRA scaling factor
-            lora_dropout=0.1,
-            target_modules=["q_proj", "v_proj"],
-            # target_modules=["q_proj", "k_proj" ,"v_proj", "out_proj"]
-        )
-
-        self.trans_encoder = get_peft_model(trans_encoder, lora_config)
-        for param in self.trans_encoder.parameters():
-            param.requires_grad = False
-        # Only unfreeze LoRA parameters
-        for name, param in self.trans_encoder.named_parameters():
-            if "lora" in name:
-                param.requires_grad = True
-        param_after_lora = sum(p.numel() for p in self.trans_encoder.parameters() if p.requires_grad)
-        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        # self.cls_token = nn.Parameter(torch.randn(1, 1, inplanes))
-    def compute_text_similarities_static(self, text_features):
-        # Clone text features and disable gradient tracking
-        text_features_static = text_features.clone().detach()
-        text_features_static.requires_grad = False  # Ensure no gradients are tracked
-
-        # Compute cosine similarities
-        text_sim_matrix = torch.matmul(text_features_static, text_features_static.T)
-        return text_sim_matrix
-
-    def create_soft_target_matrix_with_gradients(self, batch_size, text_sim_matrix, scale_off_diag=0.1):
-        # Create an identity matrix for the diagonal
-        target_matrix = torch.eye(batch_size, device=text_sim_matrix.device, requires_grad=False)
-        # Add off-diagonal text similarities
-        off_diag_matrix = scale_off_diag * text_sim_matrix * (1 - torch.eye(batch_size, device=text_sim_matrix.device, requires_grad=False))
-        target_matrix += off_diag_matrix
-        return target_matrix
-
-    def forward(self, src_input, desc_feats):
-        x, attention_mask = self.model(src_input['input_ids'], src_input['src_length_batch'], src_input['attention_mask']) # [b, n, c]
-        # attention_mask = src_input['attention_mask']
-
-        # B, N, C = x.shape
-        # cls_token = self.cls_token.repeat(B, 1, 1)
-        # x = torch.cat((cls_token, x), dim=1)
-        # attention_mask = F.pad(attention_mask.flatten(1), (1, 0), value=1.)  # [b, 64] --> [b, 65]
-
-        outs = self.trans_encoder(inputs_embeds=x, attention_mask=attention_mask, return_dict=True)
-        last_hidden_state = outs['last_hidden_state']
-        img_to_desc = last_hidden_state.mean(dim=1)
-        
-        desc_feats = desc_feats / desc_feats.norm(dim=-1, keepdim=True)
-        img_to_desc = img_to_desc / img_to_desc.norm(dim=-1, keepdim=True)
-        
-        desc_sim_matrix = self.compute_text_similarities_static(desc_feats)
-        # cosine similarity as logits
-        logit_scale = self.logit_scale.exp()
-        logits_per_image = logit_scale * img_to_desc @ desc_feats.t()
-        logits_per_text = logit_scale * desc_feats @ img_to_desc.t()
-        
-        ground_truth_desc = self.create_soft_target_matrix_with_gradients(
-            batch_size=logits_per_image.shape[0],
-            text_sim_matrix=desc_sim_matrix,
-            scale_off_diag=0.0,
-        )
-        
-        return logits_per_image, logits_per_text, ground_truth_desc
 
 class SLRCLIP(nn.Module):
     def __init__(self, config, embed_dim=1024):
@@ -536,6 +605,8 @@ class SLRCLIP(nn.Module):
         trainable_params_model_images = sum(p.numel() for p in self.model_images.parameters() if p.requires_grad)
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.logit_scale_desc = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        
+        self.cross_attention = CrossAttention(d_model=1024, num_heads=8, dropout=0.1, use_rotay=False, use_local_mask=False, use_layer_scale=False)
 
     def compute_text_similarities_static(self, text_features):
         # Clone text features and disable gradient tracking
@@ -554,39 +625,29 @@ class SLRCLIP(nn.Module):
         target_matrix += off_diag_matrix
         return target_matrix
 
-    def forward(self, src_input, tgt_input, desc_feats):
-        image_features, img_to_desc, predicted_hamer = self.model_images(src_input)
-        text_features = self.model_txt(tgt_input)
+    def forward(self, src_input, tgt_input):
+        image_states, image_features, mask = self.model_images(src_input)
+        text_states, text_features = self.model_txt(tgt_input)
+        image_features = self.cross_attention(image_states, text_states, text_states, query_mask=mask, mask=tgt_input['attention_mask'])
+        image_features = image_features.mean(dim=1)
 
         # normalized features
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-        desc_feats = desc_feats / desc_feats.norm(dim=-1, keepdim=True)
-        img_to_desc = img_to_desc / img_to_desc.norm(dim=-1, keepdim=True)
-
+        
         text_sim_matrix = self.compute_text_similarities_static(text_features)
         # cosine similarity as logits
         logit_scale = self.logit_scale.exp()
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logit_scale * text_features @ image_features.t()
         
-        desc_sim_matrix = self.compute_text_similarities_static(desc_feats)
-        logit_scale_desc = self.logit_scale.exp()
-        logits_per_image_desc = logit_scale_desc * img_to_desc @ desc_feats.t()
-        logits_per_text_desc = logit_scale_desc * desc_feats @ img_to_desc.t()
-
         # ground_truth = torch.eye(logits_per_image.shape[0], device=logits_per_text.device, dtype=logits_per_image.dtype, requires_grad=False)
         ground_truth = self.create_soft_target_matrix_with_gradients(
             batch_size=logits_per_image.shape[0],
             text_sim_matrix=text_sim_matrix,
             scale_off_diag=0.0,
         )
-        ground_truth_desc = self.create_soft_target_matrix_with_gradients(
-            batch_size=logits_per_image_desc.shape[0],
-            text_sim_matrix=desc_sim_matrix,
-            scale_off_diag=0.0,
-        )
-        return logits_per_image, logits_per_text, logits_per_image_desc, logits_per_text_desc ,ground_truth, ground_truth_desc, predicted_hamer
+        return logits_per_image, logits_per_text, ground_truth
 
 def config_decoder(config):
     from transformers import AutoConfig

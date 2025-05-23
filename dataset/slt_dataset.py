@@ -65,10 +65,10 @@ class S2T_Dataset(Dataset):
         tgt_sample = sample['text']
         
         img_sample = self.load_imgs(name_sample)
-        hamer_feature = self.load_hamer(name_sample)
-        desc_feature = self.load_desc(name_sample)
+        # hamer_feature = self.load_hamer(name_sample)
+        # desc_feature = self.load_desc(name_sample)
         # print(img_sample.shape)
-        return name_sample, img_sample, tgt_sample, hamer_feature, desc_feature
+        return name_sample, img_sample, tgt_sample
     
     def load_desc(self, file_name):
         phase, file_name = file_name.split('/')
@@ -126,17 +126,13 @@ class S2T_Dataset(Dataset):
     
     def collate_fn(self, batch):
         tgt_batch, img_tmp, src_length_batch, name_batch = [],[],[],[]
-        desc_features = []
-        hamer_features = []
 
-        for name_sample, img_sample, tgt_sample, hamer_feature, desc_feature in batch:
+        for name_sample, img_sample, tgt_sample in batch:
 
             name_batch.append(name_sample)
             img_tmp.append(img_sample)
             tgt_batch.append(tgt_sample)
-            hamer_features.append(hamer_feature)
-            desc_features.append(desc_feature)
-
+        
         max_len = max([len(vid) for vid in img_tmp])
         mask = torch.zeros((len(img_tmp), max_len), dtype=torch.long)
         for i in range(len(img_tmp)):
@@ -145,10 +141,7 @@ class S2T_Dataset(Dataset):
         src_length_batch = torch.tensor(src_length_batch).long()
         
         img_batch = torch.cat(img_tmp,0)
-        desc_features_batch = torch.cat(desc_features,0)
-        hamer_features_batch = pad_sequence(hamer_features, batch_first=True, padding_value=0.0)
-        hamer_mask = pad_sequence([torch.ones(len(f)) for f in hamer_features], batch_first=True, padding_value=0.0)
-
+        
         with self.tokenizer.as_target_tokenizer():
             tgt_input = self.tokenizer(tgt_batch, return_tensors="pt", padding = True, max_length=self.max_words, truncation=True)
 
@@ -158,7 +151,7 @@ class S2T_Dataset(Dataset):
         src_input['name_batch'] = name_batch
         src_input['src_length_batch'] = src_length_batch
         
-        return src_input, tgt_input, desc_features_batch, hamer_features_batch, hamer_mask 
+        return src_input, tgt_input
     
 class DataModule(pl.LightningDataModule):
     def __init__(
