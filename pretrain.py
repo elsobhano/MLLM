@@ -81,7 +81,7 @@ def main(args):
     if args.logger == 'wandb':
         save_dir=f'{args.log_dir}/log_{current_time}'
         setupWandB(storage=save_dir)
-        logger = WandbLogger(project="Cross_Pre", config=vars(args), log_model=False,)
+        logger = WandbLogger(save_dir=save_dir, project="Cross_Pre", config=vars(args), log_model=False,)
     else:
         logger = TensorBoardLogger(save_dir=f'{args.log_dir}/log_{current_time}', name="Sign2GPT")
     

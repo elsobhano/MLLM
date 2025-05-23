@@ -64,7 +64,7 @@ class PreTrainModel(pl.LightningModule):
         return val_total_loss
     
     def test_step(self, input_batch, batch_idx):
-        logits_per_image, logits_per_text, ground_truth = self(input_batch[:-2])
+        logits_per_image, logits_per_text, ground_truth = self(input_batch)
         
         loss_imgs = self.loss_img(logits_per_image, ground_truth)
         loss_texts = self.loss_txt(logits_per_text, ground_truth)
